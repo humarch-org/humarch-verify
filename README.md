@@ -16,7 +16,8 @@ genesis hash, and verifies the Ed25519 signatures against the self-certifying
 reports can never diverge.
 
 The full specification (canonicalization, pre-image, signature, anchors) lives
-in the `humarch-spec` repository, with test vectors V0–V5: any independent
+in the [`humarch-spec`](https://github.com/humarch-org/humarch-spec)
+repository, with test vectors V0–V5: any independent
 implementation that reproduces those vectors is conformant.
 
 ## Usage
@@ -85,12 +86,14 @@ independent proofs — check at least one **before running the binary**:
    commit — no downloaded website in the loop:
 
    ```sh
-   gh attestation verify humarch-verify-linux-x64 --repo <owner>/humarch-verify
+   gh attestation verify humarch-verify-linux-x64 --repo humarch-org/humarch-verify
    ```
 
 The same caution applies to the **trusted key set** itself: the issuer's
 public keys are published in several independent places (this repo's
-`KEYS.md`, `humarch-spec/KEYS.md`, the issuer's
+`KEYS.md`,
+[`humarch-spec/KEYS.md`](https://github.com/humarch-org/humarch-spec/blob/main/KEYS.md),
+the issuer's
 `/.well-known/humarch-keys.json`, the service-ops evidence trail, and the
 `EMBEDDED_ISSUER` registry inside the released binaries) — cross-check them;
 a mismatch anywhere is a red flag. See [`KEYS.md`](KEYS.md).
