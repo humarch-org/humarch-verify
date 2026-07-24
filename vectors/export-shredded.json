@@ -1,0 +1,57 @@
+{
+  "description": "humarch-export/v1 carrying the V6 event (humarch-spec vectors/shredding/v6.json): payload.personal is an AES-256-GCM envelope whose DEK has been crypto-shredded (B8 D52). By construction the export is BYTE-IDENTICAL to the pre-shred one — the verifier hashes the stored form (B2 §2.0 rule B8) and never needs a key: this file must verify fully, and tampering inside the envelope must be detected like any other payload byte.",
+  "format": "humarch-export/v1",
+  "generated_at": "2026-07-06T00:00:00.000000Z",
+  "tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+  "range": {
+    "from_sequence": 1,
+    "to_sequence": 1
+  },
+  "genesis_note": "prev_hash of sequence 1 = sha256('humarch:genesis:' + tenant_id), see humarch-spec",
+  "signing_keys": [
+    {
+      "signing_key_id": "ed25519:21fe31dfa154a261",
+      "algorithm": "ed25519",
+      "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "created_at": "2026-06-01T00:00:00.000000Z",
+      "retired_at": null
+    }
+  ],
+  "events": [
+    {
+      "event_id": "7d8e9f0a-1b2c-4d3e-8f4a-5b6c7d8e9f0a",
+      "tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+      "sequence_number": 1,
+      "received_at": "2026-06-12T09:15:42.123456Z",
+      "occurred_at": "2026-06-12T09:15:42.123456Z",
+      "source": "make",
+      "event_type": "agent_action",
+      "actor": {"type": "agent", "id": "asst_4kx", "label": "Email Assistant"},
+      "subject": {
+        "workflow": {"ref": "298311", "label": "Order confirmations"},
+        "end_client": {"ref": "acme-ltd", "label": "ACME Ltd"},
+        "tool": {"ref": "gmail", "label": "Gmail"}
+      },
+      "payload": {
+        "action": "send_email",
+        "tool": "gmail",
+        "result": "success",
+        "duration_ms": 1240,
+        "personal": {
+          "enc": "aes-256-gcm",
+          "v": 1,
+          "subject": "acme-ltd",
+          "iv": "oKGio6Slpqeoqaqr",
+          "ct": "nToOSCaictYHC/OMaRutu1KWe1r93yxM2GFDpFOJAW7wTGWcw0s2UyvcYbBoF/OVIjUlJw/yZw==",
+          "tag": "vdoPr2QXzt+qxyNGYo6+kQ=="
+        }
+      },
+      "payload_hash": "d536576d5431aa05bd6abb69442379e3e689271a06728dbd5d42daafa04af77e",
+      "prev_hash": "ce0d561658e27956a6e600098c094d320ff8b01280f466d5dac742cd34b14e3c",
+      "event_hash": "396ccdc369e67ed3716e814d591bf8217b71aef1175642bcb90bd5feb5ad7797",
+      "signature": "a653fbf934c07bba4ccc25bb71def350f4d12c8bf8e87d1d4274c9f5dc335ee27b0c7e5a32f07045ae8efe8ee5888487943dd3b71c6bd9a69a8965cc870cfc0d",
+      "signing_key_id": "ed25519:21fe31dfa154a261"
+    }
+  ],
+  "anchors": []
+}

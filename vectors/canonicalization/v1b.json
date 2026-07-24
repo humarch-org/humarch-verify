@@ -1,0 +1,6 @@
+{
+  "description": "V1b — ECMAScript numbers and unicode: a Postgres export may print 1000000000000000000000, re-canonicalization always yields 1e+21 (B2 §2.8)",
+  "input": {"msg": "order already confirmed — city: Köln ❤", "n": 1.5, "big": 1e21, "small": 0.0001},
+  "canonical": "{\"big\":1e+21,\"msg\":\"order already confirmed — city: Köln ❤\",\"n\":1.5,\"small\":0.0001}",
+  "sha256": "50dd72bd060d2181dbe2f8525bf71c80f951d44d236d7fb6fa995aa1df9093b0"
+}

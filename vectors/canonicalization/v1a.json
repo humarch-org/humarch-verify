@@ -1,0 +1,6 @@
+{
+  "description": "V1a — recursive key ordering, null/bool, arrays untouched (B2 §2.8)",
+  "input": {"zeta": "ultimo", "alpha": 1, "nested": {"b": true, "a": null}, "arr": [3, 2, 1]},
+  "canonical": "{\"alpha\":1,\"arr\":[3,2,1],\"nested\":{\"a\":null,\"b\":true},\"zeta\":\"ultimo\"}",
+  "sha256": "8343aad6e204e765bfb39fdc9d996a84f0306ec547a4948a222d3e726a56988f"
+}

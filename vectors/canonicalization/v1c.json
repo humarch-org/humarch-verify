@@ -1,0 +1,7 @@
+{
+  "description": "V1c — literal/escape equivalence: café and caf\\u00e9 canonicalize identically (B2 §2.8; also negative vector V5c: escape differences are NOT tampering)",
+  "input_literal": {"k": "café"},
+  "input_escaped_text": "{\"k\":\"caf\\u00e9\"}",
+  "canonical": "{\"k\":\"café\"}",
+  "sha256": "2303df0176226e83b89fa2a9311d76a8a4c29b0e8ae83ffaa0e431fa4f8b5359"
+}

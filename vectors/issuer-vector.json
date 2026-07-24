@@ -1,0 +1,13 @@
+{
+  "format": "humarch-keys/v1",
+  "notice": "Trusted set for the CONFORMANCE VECTORS ONLY (B10 D82). It lists the RFC 8032 TEST 1 key, whose private seed is PUBLISHED in the RFC: it attests nothing and MUST NEVER appear in EMBEDDED_ISSUER, in /.well-known/humarch-keys.json or in any production registry (CI-guarded). Pass it explicitly: humarch-verify vectors/export-v2v3.json --issuer vectors/issuer-vector.json",
+  "keys": [
+    {
+      "signing_key_id": "ed25519:21fe31dfa154a261",
+      "algorithm": "ed25519",
+      "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "created_at": "2026-06-01T00:00:00.000000Z",
+      "retired_at": null
+    }
+  ]
+}

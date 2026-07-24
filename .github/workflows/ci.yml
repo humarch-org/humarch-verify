@@ -1,0 +1,106 @@
+# humarch-verify CI (B12 §12.7): Deno.test on V0-V5 + the golden export and
+# tamper gate; phase 2 adds the OTS interop gate against the official
+# opentimestamps-client on real fixtures (D20 - required here); builds the
+# standalone binaries (D62). The network tier (public explorers + calendars,
+# HUMARCH_INTEROP_NET=1) runs on manual dispatch to keep pushes deterministic.
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      interop_net:
+        description: "also run the network interop tier (explorers + calendars)"
+        type: boolean
+        default: false
+
+# Supply-chain hardening (repo-push, 2026-07-16): least-privilege default
+# token (the test job re-declares its own id-token/attestations grants), and
+# third-party actions pinned by full commit SHA — a moved or hijacked tag
+# cannot change what runs in this repo's CI.
+permissions:
+  contents: read
+
+jobs:
+  # Residual-risk mandate R3 (audit CVE gap, 2026-07-13): the lockfile is
+  # pinned but was never compared against the advisory databases. Blocking
+  # on high/critical (user decision); moderate/low findings stay visible in
+  # the log without failing the gate. deno audit reads deno.lock natively —
+  # osv-scanner has no deno.lock extractor (checked against v2.4.0). A false
+  # positive is silenced only by a dated comment here + a pin bump or, if
+  # the advisory is wrong, an upstream dispute — never by removing the gate.
+  deps-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - name: dependency CVE gate (deno audit, fails on high/critical)
+        run: deno audit --level=high
+
+  test:
+    runs-on: ubuntu-latest
+    # Keyless build provenance (residual-risk mandate R4, bootstrap-of-trust
+    # hardening): id-token + attestations let the workflow attest the built
+    # binaries via Sigstore — no signing key to custody anywhere.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: install the official OpenTimestamps client (interop gate, D20)
+        run: pip install opentimestamps-client==0.7.2
+      # Twin of the humarch-core production check (B2 §2.9.4): the RFC 8032
+      # test key's private seed is PUBLISHED in the RFC — if it ever enters
+      # the embedded issuer registry (D82), anyone can fabricate a VERIFIED
+      # export. It may appear ONLY in test/vector files, passed via --issuer.
+      - name: "guard: the RFC 8032 test key never enters the embedded issuer (D82)"
+        run: |
+          ! grep -q "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" src/issuer.ts
+      - name: tests (vectors, golden exports, OTS interop vs official client)
+        run: deno task test
+        env:
+          HUMARCH_REQUIRE_OTS: "1"
+          HUMARCH_INTEROP_NET: ${{ inputs.interop_net && '1' || '' }}
+      - name: build standalone binaries (D62)
+        run: |
+          deno compile --allow-read --allow-net --target x86_64-unknown-linux-gnu --output dist/humarch-verify-linux-x64 src/cli.ts
+          deno compile --allow-read --allow-net --target x86_64-pc-windows-msvc --output dist/humarch-verify-windows-x64 src/cli.ts
+          deno compile --allow-read --allow-net --target x86_64-apple-darwin --output dist/humarch-verify-macos-x64 src/cli.ts
+          deno compile --allow-read --allow-net --target aarch64-apple-darwin --output dist/humarch-verify-macos-arm64 src/cli.ts
+      # Residual-risk mandate R4 (audit F1 residual, bootstrap of trust): a
+      # verifier binary is the first link of the whole trust chain — publish
+      # (1) its checksum and (2) keyless SLSA provenance, so a third party can
+      # prove the binary came from THIS commit of THIS repo before running it.
+      # README ("Trust the binary…") documents the user-side check.
+      - name: SHA256SUMS for the release binaries (R4)
+        run: |
+          cd dist
+          sha256sum humarch-verify-* | tee SHA256SUMS
+      - name: attest build provenance (Sigstore keyless, R4)
+        # PRs (fork tokens) have no attestation identity; pushes and releases do.
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/humarch-verify-*
+            dist/SHA256SUMS
+      - name: "gate: the attestation verifies (gh attestation verify, R4)"
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify dist/humarch-verify-linux-x64 --repo "$GITHUB_REPOSITORY"
+          gh attestation verify dist/SHA256SUMS --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: humarch-verify-binaries
+          path: dist/

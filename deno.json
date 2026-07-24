@@ -1,0 +1,14 @@
+{
+  "name": "@humarch/verify",
+  "version": "0.1.0",
+  "exports": "./src/verify.ts",
+  "tasks": {
+    "test": "deno test --allow-read --allow-net --allow-run --allow-write --allow-env tests/",
+    "verify": "deno run --allow-read --allow-net src/cli.ts",
+    "compile": "deno compile --allow-read --allow-net --output dist/humarch-verify src/cli.ts"
+  },
+  "lock": true,
+  "fmt": {
+    "lineWidth": 100
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "V4 — daily anchor aggregate (formula D9, B2 §2.8): two tenants on 2026-06-12, the second one synthetic",
+  "anchor_date": "2026-06-12",
+  "entries": [
+    {"tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b", "last_event_hash": "9ef4602bd82514c2880f221549b2ce6f71d88322c4ce15c7ed03d6e4ce230a03"},
+    {"tenant_id": "a1b2c3d4-0000-4111-8222-333344445555", "last_event_hash": "c0ffee0000000000000000000000000000000000000000000000000000000000"}
+  ],
+  "aggregate_hash": "9f1142f44ef3e03b23d3277beb151377dfb0a16765cd9ff0d6f320714c0ee8da"
+}

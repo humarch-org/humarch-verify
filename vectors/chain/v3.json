@@ -1,0 +1,29 @@
+{
+  "description": "V3 — event 2 (human_approval, chained, occurred_at declared by the source), RFC 8032 TEST 1 key (B2 §2.8)",
+  "event": {
+    "event_id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+    "tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+    "sequence_number": 2,
+    "received_at": "2026-06-12T09:29:03.000017Z",
+    "occurred_at": "2026-06-12T09:28:55.000000Z",
+    "source": "make",
+    "event_type": "human_approval",
+    "actor": {"type": "human", "id": "john.doe@agency.example", "label": "John Doe"},
+    "subject": {
+      "workflow": {"ref": "scn_298311", "label": "Order confirmations"},
+      "end_client": {"ref": "acme-ltd", "label": "ACME Ltd"}
+    },
+    "payload": {
+      "decision": "approved",
+      "latency_seconds": 847,
+      "note": "Amount above threshold, verified manually"
+    },
+    "payload_hash": "78c9d050fcf06021b68386c3c4cd900ebdb9efaa97d585069faf94915a2cba37",
+    "prev_hash": "a2d6b5192a4035e31dde77b9589cfefdf116641bfc6a7f1a34013fb1b0d6fd3b",
+    "event_hash": "9ef4602bd82514c2880f221549b2ce6f71d88322c4ce15c7ed03d6e4ce230a03",
+    "signature": "36cd4fee21fb251039b6f4005bceeb2abecfe35db206f7be2a6ba42e2523c65dcf13d32f001f2bffdb825114f8e35748e4d446182960d7240a289144acf18a0d",
+    "signing_key_id": "ed25519:21fe31dfa154a261"
+  },
+  "actor_hash": "50aa2d2a1495b19cb79465bf614045cdd93b9a9ea3b2746098d76c6625aa3436",
+  "subject_hash": "63fd9a54671fc3547a75e602c1b7da91d71f471818ffe402cb85ff34da1d4c09"
+}

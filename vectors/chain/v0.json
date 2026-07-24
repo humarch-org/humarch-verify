@@ -1,0 +1,6 @@
+{
+  "description": "V0 — per-tenant genesis (D4, B2 §2.8)",
+  "tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+  "input": "humarch:genesis:0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+  "genesis": "ce0d561658e27956a6e600098c094d320ff8b01280f466d5dac742cd34b14e3c"
+}

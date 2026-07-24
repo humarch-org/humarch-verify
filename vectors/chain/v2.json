@@ -1,0 +1,37 @@
+{
+  "description": "V2 — event 1 (agent_action, first of the chain), RFC 8032 TEST 1 key (B2 §2.8)",
+  "signing_key": {
+    "seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "signing_key_id": "ed25519:21fe31dfa154a261"
+  },
+  "event": {
+    "event_id": "7d8e9f0a-1b2c-4d3e-8f4a-5b6c7d8e9f0a",
+    "tenant_id": "0f4a1c2e-7b3d-4e5f-9a8b-6c5d4e3f2a1b",
+    "sequence_number": 1,
+    "received_at": "2026-06-12T09:15:42.123456Z",
+    "occurred_at": "2026-06-12T09:15:42.123456Z",
+    "source": "make",
+    "event_type": "agent_action",
+    "actor": {"type": "agent", "id": "asst_4kx", "label": "Email Assistant"},
+    "subject": {
+      "workflow": {"ref": "scn_298311", "label": "Order confirmations"},
+      "end_client": {"ref": "acme-ltd", "label": "ACME Ltd"},
+      "tool": {"ref": "gmail", "label": "Gmail"}
+    },
+    "payload": {
+      "action": "send_email",
+      "tool": "gmail",
+      "params": {"to": "client@example.com", "subject": "Order confirmation #4821"},
+      "result": "success",
+      "duration_ms": 1240
+    },
+    "payload_hash": "c0578caa2b1a014d6089c693a0a00354290834d3068cac5a1a8ed79479e449bc",
+    "prev_hash": "ce0d561658e27956a6e600098c094d320ff8b01280f466d5dac742cd34b14e3c",
+    "event_hash": "a2d6b5192a4035e31dde77b9589cfefdf116641bfc6a7f1a34013fb1b0d6fd3b",
+    "signature": "ba5edce7ca3adfa7f232e59ba8c3af01350aa963c1d268ef33bc52a1a3c6309a7818cd96eafe05916f866a2d12f75486cdb26a982027079b353726c3e156fa07",
+    "signing_key_id": "ed25519:21fe31dfa154a261"
+  },
+  "actor_hash": "b0486a11017485e017970ece65cc6f169b1936126d17527fed3f4ffd4e48fe91",
+  "subject_hash": "1d97e8b28f01dfe12529d6ff57e0caad30819d51820ef49980f88b92ad7d918a"
+}

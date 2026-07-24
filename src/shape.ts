@@ -1,0 +1,263 @@
+// humarch-verify/src/shape.ts — validation of the FORM of a humarch-export/v1
+// value at the trust boundary (audit F5, 2026-07-12). ADDITIVE module: the
+// normative verification routine (verify.ts, D63) and its Verdict are
+// untouched — this file answers one question only: "can verifyChain and
+// verifyAnchors consume this parsed value without throwing, and can the CLI
+// interpolate the checked fields into a terminal without side effects?"
+// (the second half added by audit 3, 2026-07-18: V1 non-finite numbers,
+// V2 control bytes, W1 tenant coherence, W2 strict anchor_date).
+//
+// It never judges integrity. A well-formed-but-tampered export MUST pass this
+// check and flow to the verifier for its own verdict (tampered/anchor_failed):
+// only values whose SHAPE is wrong — hex fields of the wrong length or
+// alphabet, missing required members, non-array collections, undecodable
+// base64 — are reported. Both untrusted boundaries call it: the CLI maps a
+// non-empty result to `malformed` (exit 4, D65) and the panel verifyExport
+// action to its existing `rp_verify_failed` error. No new semantics.
+
+const HEX_64 = /^[0-9a-fA-F]{64}$/;
+const HEX_128 = /^[0-9a-fA-F]{128}$/;
+// W2 (audit 3): Date.parse is lenient — "2026-06-12junk" parses, to a
+// DIFFERENT day — so the anchor time-consistency window must only ever see
+// the declared date as written. Calendar validity is not needed here: an
+// impossible day fails Date.parse inside anchorTimeConsistent, fail-safe.
+const DATE_YMD = /^\d{4}-\d{2}-\d{2}$/;
+// V2 (audit 3): C0 control bytes (ESC included) plus DEL. The checked
+// string fields are identifiers, timestamps, statuses — several are
+// interpolated raw into the human-readable verdict, where a control byte
+// would let a hostile export drive the verifier's terminal. Genuine values
+// never contain one (SPEC §1 already bans U+0000 in every string).
+const CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const isBase64 = (s: string): boolean => {
+  try {
+    atob(s);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function checkHex(
+  problems: string[],
+  path: string,
+  value: unknown,
+  re: RegExp,
+  bits: string,
+): void {
+  if (typeof value !== "string" || !re.test(value)) {
+    problems.push(`${path}: expected ${bits} as lowercase/uppercase hex`);
+  }
+}
+
+function checkString(problems: string[], path: string, value: unknown): void {
+  if (typeof value !== "string" || value.length === 0) {
+    problems.push(`${path}: expected a non-empty string`);
+  } else if (CONTROL_BYTES.test(value)) {
+    problems.push(`${path}: control bytes are not allowed`);
+  }
+}
+
+// V1 (audit 3): JSON.parse turns the out-of-range literal 1e999 into
+// Infinity, which RFC 8785 cannot represent — canonicalize() would throw
+// inside the verifier (exit 1 with a stack trace instead of the contractual
+// exit 4). A genuine export can never carry one: JSON.stringify never emits
+// non-finite numbers. Iterative walk on purpose — hostile nesting depth must
+// not crash the gate either.
+function checkFinite(problems: string[], path: string, root: unknown): void {
+  const stack: [string, unknown][] = [[path, root]];
+  while (stack.length > 0) {
+    const [p, v] = stack.pop() as [string, unknown];
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) {
+        problems.push(`${p}: non-finite number (not representable in JSON, RFC 8785)`);
+      }
+    } else if (Array.isArray(v)) {
+      v.forEach((x, i) => stack.push([`${p}[${i}]`, x]));
+    } else if (isObject(v)) {
+      for (const [k, x] of Object.entries(v)) stack.push([`${p}.${k}`, x]);
+    }
+  }
+}
+
+/**
+ * Structural problems of a parsed humarch-export/v1 value; empty array means
+ * the export is well-FORMED (it may still be tampered — run the verifier).
+ * Only members the verifier consumes are checked; unknown members pass.
+ */
+export function exportShapeProblems(value: unknown): string[] {
+  const problems: string[] = [];
+  if (!isObject(value)) return ["export: not a JSON object"];
+  const exp = value;
+
+  if (exp.format !== "humarch-export/v1") {
+    problems.push('format: not "humarch-export/v1"');
+  }
+  checkString(problems, "tenant_id", exp.tenant_id);
+  if (exp.range != null && !isObject(exp.range)) {
+    problems.push("range: expected an object");
+  }
+
+  if (exp.signing_keys != null) {
+    if (!Array.isArray(exp.signing_keys)) {
+      problems.push("signing_keys: expected an array");
+    } else {
+      exp.signing_keys.forEach((k, i) => {
+        if (!isObject(k)) {
+          problems.push(`signing_keys[${i}]: expected an object`);
+          return;
+        }
+        checkString(problems, `signing_keys[${i}].signing_key_id`, k.signing_key_id);
+        checkHex(
+          problems,
+          `signing_keys[${i}].public_key`,
+          k.public_key,
+          HEX_64,
+          "64 hex chars (raw Ed25519 public key)",
+        );
+      });
+    }
+  }
+
+  if (!Array.isArray(exp.events)) {
+    problems.push("events: expected an array");
+  } else {
+    exp.events.forEach((ev, i) => {
+      if (!isObject(ev)) {
+        problems.push(`events[${i}]: expected an object`);
+        return;
+      }
+      for (
+        const f of [
+          "event_id",
+          "tenant_id",
+          "received_at",
+          "occurred_at",
+          "source",
+          "event_type",
+          "signing_key_id",
+        ]
+      ) {
+        checkString(problems, `events[${i}].${f}`, ev[f]);
+      }
+      // W1 (audit 3): the verdict is ABOUT exp.tenant_id — the rendered
+      // header, the genesis pre-image and the anchor binding all use it. An
+      // event list that mixes tenants, or belongs to another tenant than the
+      // export declares, is not a well-formed export of this chain: refuse to
+      // issue a verdict under an attacker-chosen tenant label. (Fail-safe
+      // even without this check: genesis hashes ev.tenant_id per event and
+      // the anchor binding matches exp.tenant_id against committed entries —
+      // the incoherence could mislead a reader, never mint a false VERIFIED.)
+      if (
+        typeof ev.tenant_id === "string" && typeof exp.tenant_id === "string" &&
+        ev.tenant_id !== exp.tenant_id
+      ) {
+        problems.push(`events[${i}].tenant_id: does not match the export tenant_id`);
+      }
+      // Sequences are dense positive integers by construction (D5): floats,
+      // zero/negatives and non-numbers are all form errors, not verdicts.
+      // W9 (audit 3): also bound by Number.MAX_SAFE_INTEGER — above 2^53−1 the
+      // double arithmetic loses precision (1e21 + 1 === 1e21, so the gap check
+      // degenerates) and String(seq) in the pre-image turns to exponential
+      // notation; genuine sequences live far inside the safe range (2^53−1
+      // events is unreachable by definition), so reject the rest as a form
+      // error rather than let it degrade the gate.
+      if (
+        !Number.isInteger(ev.sequence_number) || (ev.sequence_number as number) < 1 ||
+        (ev.sequence_number as number) > Number.MAX_SAFE_INTEGER
+      ) {
+        problems.push(`events[${i}].sequence_number: expected a positive integer`);
+      }
+      // Presence (jcs throws on undefined, i.e. on a MISSING member) + V1:
+      // every number the verifier will canonicalize must be finite.
+      for (const f of ["actor", "subject", "payload"]) {
+        if (!(f in ev)) problems.push(`events[${i}].${f}: missing`);
+        else checkFinite(problems, `events[${i}].${f}`, ev[f]);
+      }
+      for (const f of ["payload_hash", "prev_hash", "event_hash"]) {
+        checkHex(problems, `events[${i}].${f}`, ev[f], HEX_64, "64 hex chars (SHA-256)");
+      }
+      checkHex(
+        problems,
+        `events[${i}].signature`,
+        ev.signature,
+        HEX_128,
+        "128 hex chars (Ed25519 signature)",
+      );
+    });
+  }
+
+  if (exp.anchors != null) {
+    if (!Array.isArray(exp.anchors)) {
+      problems.push("anchors: expected an array");
+    } else {
+      // W3 layer 2 (audit 3, reclassified 2026-07-19): an export has at most
+      // one anchor per UTC day (one daily aggregate, D9), so two anchors
+      // sharing a date is a form error, never a genuine export. Refusing it
+      // here (exit 4) closes the chain↔anchor binding bypass at the shape
+      // boundary, independently of the per-index binding fix in render.ts: a
+      // decoy anchor cannot ride in on the real one's date.
+      const seenDates = new Set<string>();
+      exp.anchors.forEach((a, i) => {
+        if (!isObject(a)) {
+          problems.push(`anchors[${i}]: expected an object`);
+          return;
+        }
+        if (typeof a.anchor_date !== "string" || !DATE_YMD.test(a.anchor_date)) {
+          problems.push(`anchors[${i}].anchor_date: expected a YYYY-MM-DD date`);
+        } else if (seenDates.has(a.anchor_date)) {
+          problems.push(
+            `anchors[${i}].anchor_date: duplicate anchor date (at most one anchor per UTC day, D9)`,
+          );
+        } else {
+          seenDates.add(a.anchor_date);
+        }
+        checkString(problems, `anchors[${i}].ots_status`, a.ots_status);
+        checkHex(
+          problems,
+          `anchors[${i}].aggregate_hash`,
+          a.aggregate_hash,
+          HEX_64,
+          "64 hex chars (D9 aggregate)",
+        );
+        if (a.anchor_entries_for_aggregate != null) {
+          if (!Array.isArray(a.anchor_entries_for_aggregate)) {
+            problems.push(`anchors[${i}].anchor_entries_for_aggregate: expected an array`);
+          } else {
+            a.anchor_entries_for_aggregate.forEach((e, j) => {
+              if (!isObject(e)) {
+                problems.push(
+                  `anchors[${i}].anchor_entries_for_aggregate[${j}]: expected an object`,
+                );
+                return;
+              }
+              checkString(
+                problems,
+                `anchors[${i}].anchor_entries_for_aggregate[${j}].tenant_id`,
+                e.tenant_id,
+              );
+              checkHex(
+                problems,
+                `anchors[${i}].anchor_entries_for_aggregate[${j}].last_event_hash`,
+                e.last_event_hash,
+                HEX_64,
+                "64 hex chars (SHA-256)",
+              );
+            });
+          }
+        }
+        if (
+          a.ots_file_base64 != null &&
+          (typeof a.ots_file_base64 !== "string" || !isBase64(a.ots_file_base64))
+        ) {
+          problems.push(`anchors[${i}].ots_file_base64: expected a base64 string`);
+        }
+      });
+    }
+  }
+
+  return problems;
+}
