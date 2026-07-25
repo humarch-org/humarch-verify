@@ -7,6 +7,10 @@ name: ci
 on:
   push:
   pull_request:
+  # Advisories land while the repo sits still: re-run the CVE gate weekly
+  # (Mon 06:17 UTC), not only on pushes.
+  schedule:
+    - cron: "17 6 * * 1"
   workflow_dispatch:
     inputs:
       interop_net:
