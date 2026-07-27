@@ -1,11 +1,13 @@
-// humarch-verify CLI (B10 D62/D65, D82).
+// humarch-verify CLI (B10 D62/D65, D82, D98).
 //
 //   humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>]
+//                  [--tsa-trust <file>]
 //                  [--ots-level explorer|trustless|convenience] [--json]
 //
 // Exit codes (D65 + 2026-07-12 amendment): 0 verified · 2 chain/signatures
 // invalid · 3 anchor/OTS not verified · 4 malformed input · 5 declared
 // partial verification · 6 keys not attributed to a trusted issuer.
+// The qualified-timestamp check (D98) is ADDITIVE: it never changes these.
 import { verifyChain } from "./verify.ts";
 import { type OtsLevel, verifyAnchors } from "./ots.ts";
 import { assess, renderHuman } from "./render.ts";
@@ -17,10 +19,11 @@ import {
   issuerShapeProblems,
   trustedKeyBytes,
 } from "./issuer.ts";
+import { EMBEDDED_TSA, tsaShapeProblems, type TsaRegistry } from "./tst_lite.ts";
 
 function usage(): never {
   console.error(
-    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--ots-level explorer|trustless|convenience] [--json]",
+    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--ots-level explorer|trustless|convenience] [--json]",
   );
   Deno.exit(4);
 }
@@ -30,6 +33,7 @@ async function main(): Promise<void> {
   let file: string | null = null;
   let pubkey: string | null = null;
   let issuerSource: string | null = null;
+  let tsaTrustSource: string | null = null;
   let otsLevel: OtsLevel = "explorer";
   let json = false;
 
@@ -38,6 +42,7 @@ async function main(): Promise<void> {
     if (a === "--json") json = true;
     else if (a === "--pubkey") pubkey = args.shift() ?? usage();
     else if (a === "--issuer") issuerSource = args.shift() ?? usage();
+    else if (a === "--tsa-trust") tsaTrustSource = args.shift() ?? usage();
     else if (a === "--ots-level") {
       const v = args.shift() ?? usage();
       if (v !== "explorer" && v !== "trustless" && v !== "convenience") usage();
@@ -133,6 +138,27 @@ async function main(): Promise<void> {
   }
   const trusted = trustedKeyBytes(issuer);
 
+  // Trusted TSA registry (D98, D82 pattern): --tsa-trust document or the
+  // embedded set (empty until go-live ⇒ every valid token reads "untrusted
+  // TSA, no presumption" — the honest default). File only: the QTSP pin is a
+  // local trust decision, not something to fetch at verification time.
+  let tsaRegistry: TsaRegistry = EMBEDDED_TSA;
+  if (tsaTrustSource !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Deno.readTextFileSync(tsaTrustSource));
+    } catch (err) {
+      console.error(`cannot read --tsa-trust ${tsaTrustSource}: ${(err as Error).message}`);
+      Deno.exit(4);
+    }
+    const problems = tsaShapeProblems(parsed);
+    if (problems.length > 0) {
+      console.error(`malformed tsa-trust document: ${problems[0]}`);
+      Deno.exit(4);
+    }
+    tsaRegistry = parsed as TsaRegistry;
+  }
+
   // deno-lint-ignore no-explicit-any
   let exp: any;
   try {
@@ -161,7 +187,7 @@ async function main(): Promise<void> {
   const attribution = attributeEvents(exp, trusted);
 
   const chain = await verifyChain(exp);
-  const anchors = await verifyAnchors(exp, otsLevel);
+  const anchors = await verifyAnchors(exp, otsLevel, undefined, tsaRegistry);
   const { result, exitCode, properties } = assess(exp, chain, anchors, attribution);
 
   if (json) {

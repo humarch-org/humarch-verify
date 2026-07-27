@@ -255,6 +255,23 @@ export function exportShapeProblems(value: unknown): string[] {
         ) {
           problems.push(`anchors[${i}].ots_file_base64: expected a base64 string`);
         }
+        // Dual anchor (D98, SPEC 1.3.0): OPTIONAL qualified_timestamp — the
+        // shape gate stays additive (its absence is the pre-1.3 form).
+        if (a.qualified_timestamp != null) {
+          if (!isObject(a.qualified_timestamp)) {
+            problems.push(`anchors[${i}].qualified_timestamp: expected an object`);
+          } else {
+            const qt = a.qualified_timestamp;
+            if (typeof qt.token_base64 !== "string" || !isBase64(qt.token_base64)) {
+              problems.push(
+                `anchors[${i}].qualified_timestamp.token_base64: expected a base64 string`,
+              );
+            }
+            checkString(problems, `anchors[${i}].qualified_timestamp.tsa_name`, qt.tsa_name);
+            checkString(problems, `anchors[${i}].qualified_timestamp.policy_oid`, qt.policy_oid);
+            checkString(problems, `anchors[${i}].qualified_timestamp.gen_time`, qt.gen_time);
+          }
+        }
       });
     }
   }

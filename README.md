@@ -69,6 +69,29 @@ Anchor verification levels (always declared in the output):
 2. **explorer** (default) — block-header check via public explorers;
 3. **convenience** — opentimestamps.org drag & drop (quick check, not proof).
 
+**Qualified timestamp (dual anchor, spec 1.3.0).** An export may additionally
+carry, per anchor, an RFC 3161 timestamp token issued by an eIDAS qualified
+trust service provider on the **same daily aggregate hash** the Bitcoin
+anchor commits to. The check is **additive and exit-neutral**: the verifier
+parses the token (bounded, fail-safe), checks that it commits to exactly the
+anchor's `aggregate_hash`, verifies the TSA's CMS signature, and matches the
+signer certificate against a trusted TSA registry (`humarch-tsa/v1` —
+embedded set, or `--tsa-trust <file>`); the outcome is one extra line per
+anchor (`valid · <TSA> · <genTime>` / `absent` / `invalid` /
+`valid token, untrusted TSA, no presumption`) and never changes the exit
+code. Semantics, pinned by the spec: the qualified timestamp attaches the
+art. 42 presumption **to the daily aggregate**; every event verifiably
+contained in it inherits that anteriority through deterministic,
+reproducible recomputation. Full eIDAS chain validation against the EU
+Trusted List belongs to standard tooling — the token is a plain
+TimeStampToken, e.g.:
+
+```sh
+# extract token_base64 to token.tst, then:
+openssl ts -verify -digest <aggregate_hash> -token_in -in token.tst \
+  -CAfile <QTSP CA chain>
+```
+
 ## Trust the binary before you trust the verdict
 
 The verifier binary is the first link of the trust chain: a tampered download

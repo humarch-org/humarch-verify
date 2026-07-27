@@ -257,6 +257,32 @@ export function renderHuman(
     } else {
       lines.push(`[--] Anchor of ${a.anchor_date} — ${a.note}.`);
     }
+
+    // Dual anchor (D98 (e)): one ADDITIVE line per anchor, always about the
+    // day's AGGREGATE (never a single event), exit-neutral by design — an
+    // invalid or untrusted token is an explicit warning, never a different
+    // exit code (integrity/time/attribution stay decided above).
+    const qt = a.qualified_timestamp;
+    if (qt) {
+      switch (qt.status) {
+        case "absent":
+          lines.push(`[--] Qualified timestamp of ${a.anchor_date} — absent.`);
+          break;
+        case "valid":
+          lines.push(`[OK] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`);
+          break;
+        case "untrusted":
+          lines.push(
+            `[WARN] Qualified timestamp of ${a.anchor_date} — valid token, untrusted TSA, no presumption.`,
+          );
+          break;
+        case "invalid":
+          lines.push(
+            `[WARN] Qualified timestamp of ${a.anchor_date} — invalid (${qt.note}).`,
+          );
+          break;
+      }
+    }
   }
 
   lines.push("");
@@ -300,6 +326,13 @@ export function renderHuman(
     const last = confirmed[confirmed.length - 1];
     lines.push(
       `Note: the Bitcoin anchor covers events up to ${last.anchor_date}; later events are protected by the chain and the signatures.`,
+    );
+  }
+  // D98 (g), binding semantics: the presumption claim names the AGGREGATE —
+  // "every event has its own timestamp" is a FORBIDDEN formulation.
+  if (anchors.some((a) => a.qualified_timestamp?.status === "valid")) {
+    lines.push(
+      "Note: the qualified timestamp attaches the eIDAS art. 42 presumption to the daily aggregate; every event verifiably contained in it inherits that anteriority through deterministic, reproducible recomputation.",
     );
   }
   return lines.join("\n");

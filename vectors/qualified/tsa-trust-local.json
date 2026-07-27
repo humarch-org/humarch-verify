@@ -1,0 +1,11 @@
+{
+  "format": "humarch-tsa/v1",
+  "tsas": [
+    {
+      "name": "Humarch Test TSA (untrusted fixture)",
+      "sha256_cert_fingerprints": [
+        "62d7f2dc5423e5d3f976c680e472503b33fa3e99914e5adfe0cdaa473908ba87"
+      ]
+    }
+  ]
+}

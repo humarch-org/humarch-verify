@@ -22,6 +22,13 @@ import {
   parseOts,
   verifyBitcoinAttestations,
 } from "./ots_lite.ts";
+import {
+  EMBEDDED_TSA,
+  type QualifiedTimestampVerdict,
+  trustedTsaFingerprints,
+  type TsaRegistry,
+  verifyQualifiedTimestamp,
+} from "./tst_lite.ts";
 import { aggregateHash, toHex } from "./verify.ts";
 
 const b64ToBytes = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -64,6 +71,13 @@ export interface AnchorVerdict {
   time_consistent: boolean | null; // block time vs anchor_date; null = no verified time
   level: OtsLevel;
   note: string;
+  // Dual anchor (D98, additive): the qualified-timestamp leg of THIS DAY'S
+  // AGGREGATE — never of a single event (the art. 42 presumption attaches to
+  // the aggregate; events inherit anteriority by verifiable recomputation).
+  // Exit-neutral by design: integrity/time/attribution stay decided above.
+  // Optional so that pre-D98 verdict literals stay valid; verifyAnchors
+  // always populates it (status "absent" when the export has no mark).
+  qualified_timestamp?: QualifiedTimestampVerdict;
 }
 
 export async function verifyAnchors(
@@ -73,7 +87,11 @@ export async function verifyAnchors(
   // nothing; tests exercise the explorer leg — including the W4 attested-block
   // check — offline against a local server. Additive: default = real network.
   deps: ExplorerDeps = DEFAULT_EXPLORER_DEPS,
+  // Dual anchor (D98): trusted TSA registry (D82 pattern). Default = the
+  // embedded set (empty until go-live ⇒ every valid token reads untrusted).
+  tsaRegistry: TsaRegistry = EMBEDDED_TSA,
 ): Promise<AnchorVerdict[]> {
+  const trustedFprs = trustedTsaFingerprints(tsaRegistry);
   const out: AnchorVerdict[] = [];
   // deno-lint-ignore no-explicit-any
   for (const a of (exp.anchors ?? []) as any[]) {
@@ -171,6 +189,11 @@ export async function verifyAnchors(
       note = "anchor not yet stamped (pending)";
     }
 
+    // Dual anchor (D98 (e)): the qualified-timestamp leg — additive and
+    // exit-neutral; an invalid/untrusted token becomes an explicit warning
+    // line, never a different exit code.
+    const qualified_timestamp = await verifyQualifiedTimestamp(a, trustedFprs);
+
     out.push({
       anchor_date: a.anchor_date,
       ots_btc_block: declaredBlock,
@@ -183,6 +206,7 @@ export async function verifyAnchors(
       time_consistent,
       level,
       note,
+      qualified_timestamp,
     });
   }
   return out;
