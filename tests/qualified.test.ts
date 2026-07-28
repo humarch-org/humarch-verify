@@ -20,7 +20,7 @@ import {
 import { verifyAnchors } from "../src/ots.ts";
 import { verifyChain } from "../src/verify.ts";
 import { assess, renderHuman } from "../src/render.ts";
-import { attributeEvents } from "../src/issuer.ts";
+import { attributeEvents, trustedKeyBytes } from "../src/issuer.ts";
 import { exportShapeProblems } from "../src/shape.ts";
 
 const Q = (name: string) => new URL(`../vectors/qualified/${name}`, import.meta.url);
@@ -41,14 +41,14 @@ Deno.test("tst_lite: the local ECDSA token parses and its CMS signature verifies
   assertEquals(p.tsaName, "Humarch Test TSA (untrusted fixture)");
   assertEquals(p.policyOid, "1.3.6.1.4.1.99999.1.1");
   assert(p.signerCertDer !== null);
-  assertEquals(await verifyTstSignature(p), true);
+  assertEquals((await verifyTstSignature(p)).valid, true);
 });
 
 Deno.test("tst_lite: the freetsa.org RSA token parses and its CMS signature verifies", async () => {
   const p = parseTst(readBytes("real-freetsa.tst"));
   assertEquals(p.messageImprintHex, AGG);
   assertEquals(p.tsaName, "www.freetsa.org");
-  assertEquals(await verifyTstSignature(p), true);
+  assertEquals((await verifyTstSignature(p)).valid, true);
 });
 
 Deno.test("tst_lite: one flipped TSTInfo byte breaks the signature, typed errors on hostile bytes", async () => {
@@ -63,7 +63,11 @@ Deno.test("tst_lite: one flipped TSTInfo byte breaks the signature, typed errors
   flipped[at / 2] ^= 0x01;
   const p = parseTst(flipped);
   assert(p.messageImprintHex !== AGG, "the flip landed on the imprint digest");
-  assertEquals(await verifyTstSignature(p), false, "message-digest attribute must not match");
+  assertEquals(
+    (await verifyTstSignature(p)).valid,
+    false,
+    "message-digest attribute must not match",
+  );
   // Hostile input: typed failure, never a crash (D87 discipline).
   assertThrows(() => parseTst(raw.slice(0, 33)), TstParseError);
   assertThrows(() => parseTst(new Uint8Array([0xde, 0xad, 0xbe, 0xef])), TstParseError);
@@ -86,7 +90,8 @@ Deno.test("tst_lite: tsa-trust registry shape gate", () => {
 // Per-anchor verdict statuses (D98 (e)).
 // ---------------------------------------------------------------------------
 Deno.test("qualified verdict: absent / valid / untrusted / invalid, on the aggregate", async () => {
-  const anchor = readJson("export-qualified.json").anchors[0];
+  // In-window mark: the token was issued on THIS day's aggregate.
+  const anchor = readJson("export-qualified-today.json").anchors[0];
   const bare = { ...anchor };
   delete bare.qualified_timestamp;
 
@@ -97,6 +102,7 @@ Deno.test("qualified verdict: absent / valid / untrusted / invalid, on the aggre
   assertEquals(valid.matches_aggregate, true);
   assertEquals(valid.signature_valid, true);
   assertEquals(valid.trusted_tsa, true);
+  assertEquals(valid.gen_time_consistent, true);
   assertStringIncludes(valid.note, "valid · Humarch Test TSA");
 
   const untrusted = await verifyQualifiedTimestamp(anchor, trustNone());
@@ -118,10 +124,43 @@ Deno.test("qualified verdict: absent / valid / untrusted / invalid, on the aggre
   assertEquals((await verifyQualifiedTimestamp(huge, trustLocal())).status, "invalid");
 });
 
+Deno.test("qualified verdict binds the RECOMPUTED aggregate, not the declared one (review F1)", async () => {
+  // A genuine (aggregate_hash, token) pair lifted from a published export
+  // must not dress a fabricated entry set with a valid qualified line.
+  const anchor = readJson("export-qualified-today.json").anchors[0];
+  const forged = structuredClone(anchor);
+  forged.anchor_entries_for_aggregate[0].last_event_hash = "beef".padEnd(64, "0");
+  const v = await verifyQualifiedTimestamp(forged, trustLocal(), "0".repeat(64));
+  assertEquals(v.status, "invalid");
+  assertEquals(v.matches_aggregate, false);
+  assertStringIncludes(v.note, "recomputed per D9");
+});
+
+Deno.test("qualified verdict: a late mark stays genuine but never claims the declared day (review H1)", async () => {
+  // The real-anchor vector's token was issued weeks after its anchor day —
+  // the re-timestamp case declared by SPEC §7.1.
+  const late = readJson("export-qualified.json").anchors[0];
+  const v = await verifyQualifiedTimestamp(late, trustLocal());
+  assertEquals(v.status, "valid", "a re-timestamp is still a genuine, trusted mark");
+  assertEquals(v.gen_time_consistent, false);
+  assertStringIncludes(v.note, "issued outside the declared day's window");
+});
+
+Deno.test("qualified verdict: reordering the certificate set never downgrades a genuine mark (review M2)", async () => {
+  const p = parseTst(readBytes("real-local.tst"));
+  assert(p.certCandidates.length >= 1, "the token embeds its signer certificate");
+  // Every candidate is tried, so a set whose sid preference points elsewhere
+  // still verifies through the certificate that actually signed.
+  const shuffled = { ...p, certCandidates: [...p.certCandidates].reverse() };
+  const sig = await verifyTstSignature(shuffled);
+  assertEquals(sig.valid, true);
+  assert(sig.signerCertDer !== null, "the verifying certificate is the pinning target");
+});
+
 // ---------------------------------------------------------------------------
 // Exit neutrality + rendering (the two D98 invariants).
 // ---------------------------------------------------------------------------
-async function fullRun(name: string, trusted: boolean) {
+async function fullRun(name: string, trusted: boolean, attributeToFixture = false) {
   const exp = readJson(name);
   const chain = await verifyChain(exp);
   const anchors = await verifyAnchors(
@@ -130,14 +169,30 @@ async function fullRun(name: string, trusted: boolean) {
     undefined,
     trusted ? readJson("tsa-trust-local.json") : undefined,
   );
-  const attribution = attributeEvents(exp, new Set<string>());
+  // Attribution is orthogonal to this gate. Default: no trusted issuer
+  // (honest `unattributed`). When the RENDERING of the presumption note is
+  // under test, the fixture's own key stands in for the out-of-band trusted
+  // set — legitimate for a known local fixture, never a product behavior.
+  const trustedKeys = attributeToFixture
+    ? trustedKeyBytes({
+      format: "humarch-keys/v1",
+      keys: exp.signing_keys.map((k: { public_key: string }) => ({ public_key: k.public_key })),
+    })
+    : new Set<string>();
+  const attribution = attributeEvents(exp, trustedKeys);
   const v = assess(exp, chain, anchors, attribution);
   return { exp, chain, anchors, ...v };
 }
 
 Deno.test("exit neutrality: valid, invalid and absent marks all leave result and exit unchanged", async () => {
   const base = await fullRun("../export-real-anchor.json" as string, false);
-  for (const name of ["export-qualified.json", "export-qualified-mismatch.json", "export-qualified-malformed.json"]) {
+  for (
+    const name of [
+      "export-qualified.json",
+      "export-qualified-mismatch.json",
+      "export-qualified-malformed.json",
+    ]
+  ) {
     const run = await fullRun(name, true);
     assertEquals(run.result, base.result, `${name}: result must not move`);
     assertEquals(run.exitCode, base.exitCode, `${name}: exit code must not move`);
@@ -145,7 +200,7 @@ Deno.test("exit neutrality: valid, invalid and absent marks all leave result and
 });
 
 Deno.test("render: one additive line per anchor, aggregate semantics, no forbidden formulation", async () => {
-  const valid = await fullRun("export-qualified.json", true);
+  const valid = await fullRun("export-qualified-today.json", true, true);
   const human = renderHuman(
     valid.exp.tenant_id,
     valid.chain,
@@ -153,7 +208,7 @@ Deno.test("render: one additive line per anchor, aggregate semantics, no forbidd
     valid.result,
     valid.properties,
   );
-  assertStringIncludes(human, "[OK] Qualified timestamp of 2026-07-06 — valid · Humarch Test TSA");
+  assertStringIncludes(human, "[OK] Qualified timestamp of 2026-07-27 — valid · Humarch Test TSA");
   assertStringIncludes(
     human,
     "attaches the eIDAS art. 42 presumption to the daily aggregate",
@@ -161,7 +216,21 @@ Deno.test("render: one additive line per anchor, aggregate semantics, no forbidd
   assertStringIncludes(human, "inherits that anteriority through deterministic, reproducible recomputation");
   assert(!human.includes("every event has"), "forbidden formulation (§0.7) must never render");
 
-  const untrusted = await fullRun("export-qualified.json", false);
+  // A late (re-timestamped) mark is genuine but never reads [OK] for the
+  // declared day, and never earns the presumption note (review H1).
+  const late = await fullRun("export-qualified.json", true, true);
+  const humanL = renderHuman(
+    late.exp.tenant_id,
+    late.chain,
+    late.anchors,
+    late.result,
+    late.properties,
+  );
+  assertStringIncludes(humanL, "[WARN] Qualified timestamp of 2026-07-06 — valid · Humarch Test TSA");
+  assertStringIncludes(humanL, "issued outside the declared day's window");
+  assert(!humanL.includes("art. 42 presumption"), "a late mark never earns the presumption note");
+
+  const untrusted = await fullRun("export-qualified-today.json", false, true);
   const humanU = renderHuman(
     untrusted.exp.tenant_id,
     untrusted.chain,
@@ -171,7 +240,7 @@ Deno.test("render: one additive line per anchor, aggregate semantics, no forbidd
   );
   assertStringIncludes(
     humanU,
-    "[WARN] Qualified timestamp of 2026-07-06 — valid token, untrusted TSA, no presumption.",
+    "[WARN] Qualified timestamp of 2026-07-27 — valid token, untrusted TSA, no presumption.",
   );
   assert(!humanU.includes("art. 42 presumption"), "no presumption note without a trusted mark");
 

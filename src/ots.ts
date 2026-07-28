@@ -191,8 +191,26 @@ export async function verifyAnchors(
 
     // Dual anchor (D98 (e)): the qualified-timestamp leg — additive and
     // exit-neutral; an invalid/untrusted token becomes an explicit warning
-    // line, never a different exit code.
-    const qualified_timestamp = await verifyQualifiedTimestamp(a, trustedFprs);
+    // line, never a different exit code. Bound to the RECOMPUTED aggregate
+    // (adversarial review F1): the declared aggregate_hash is attacker data.
+    // Defence in depth: the leg is typed-fail-safe by construction, but a
+    // throw here must degrade to a declared invalid, never break the run.
+    let qualified_timestamp;
+    try {
+      qualified_timestamp = await verifyQualifiedTimestamp(a, trustedFprs, aggExpected);
+    } catch {
+      qualified_timestamp = {
+        status: "invalid" as const,
+        matches_aggregate: null,
+        signature_valid: null,
+        trusted_tsa: null,
+        gen_time_consistent: null,
+        tsa_name: null,
+        policy_oid: null,
+        gen_time: null,
+        note: "unreadable token (not a valid RFC 3161 TimeStampToken)",
+      };
+    }
 
     out.push({
       anchor_date: a.anchor_date,

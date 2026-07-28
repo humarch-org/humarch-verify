@@ -145,22 +145,36 @@ function decodeGeneralizedTime(bytes: Uint8Array): string {
   const s = new TextDecoder().decode(bytes);
   const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d{1,6})?Z$/.exec(s);
   if (!m) throw new TstParseError("genTime is not DER GeneralizedTime (Zulu)");
-  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${m[7] ?? ""}Z`;
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${m[7] ?? ""}Z`;
+  // Plausibility (review L5): "2026-99-99T99:99:99Z" matches the shape but is
+  // no date — refuse it here so no impossible date is ever rendered or stored.
+  if (!Number.isFinite(Date.parse(iso))) {
+    throw new TstParseError("genTime is not a real date");
+  }
+  return iso;
 }
+
+// Terminal-injection guard (adversarial review L1, same discipline as the W4
+// coercion of ots_btc_block): names extracted from token bytes are rendered —
+// strip C0/DEL controls and the Unicode bidi/linebreak controls that survive
+// BMPString/UTF8String decoding.
+// deno-lint-ignore no-control-regex
+const NAME_CONTROLS = /[\u0000-\u001f\u007f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 function decodeDirectoryString(tlv: Tlv, content: Uint8Array): string | null {
   const tag = tlv.id & 0x1f;
+  let out: string | null = null;
   if (tag === 0x1e) {
-    let out = "";
+    out = "";
     for (let i = 0; i + 1 < content.length; i += 2) {
       out += String.fromCharCode(content[i] * 256 + content[i + 1]);
     }
-    return out;
+  } else if (tag === 0x0c || tag === 0x13 || tag === 0x16 || tag === 0x14) {
+    out = new TextDecoder().decode(content);
   }
-  if (tag === 0x0c || tag === 0x13 || tag === 0x16 || tag === 0x14) {
-    return new TextDecoder().decode(content);
-  }
-  return null;
+  if (out === null) return null;
+  const clean = out.replace(NAME_CONTROLS, "").trim();
+  return clean === "" ? null : clean;
 }
 
 function nameCn(r: DerReader, name: Tlv, depth: number): string | null {
@@ -185,14 +199,21 @@ export interface ParsedTst {
   hashAlgorithmOid: string;
   messageImprintHex: string;
   genTime: string;
+  /** Lowercase hex of the TSTInfo nonce, when present (the CORE's echo check
+   * needs it — this module is vendored there, single implementation). */
+  nonceHex: string | null;
   tsaName: string | null;
   /** DER of the TSTInfo (the digest target of the message-digest attribute). */
   tstInfoDer: Uint8Array;
-  /** DER of the signer certificate (registry fingerprint target); null when
-   * the token embeds no certificates. */
+  /** DER of the PREFERRED signer certificate (sid-matched, else first);
+   * parse-time convenience only — trust decisions use the certificate
+   * verifyTstSignature actually verified with (review M2). */
   signerCertDer: Uint8Array | null;
-  /** SubjectPublicKeyInfo DER of the signer certificate. */
+  /** SubjectPublicKeyInfo DER of the preferred signer certificate. */
   signerSpkiDer: Uint8Array | null;
+  /** Every parseable embedded certificate, sid-matches first — the signature
+   * check tries them in order (the set is not signature-covered). */
+  certCandidates: TstCertCandidate[];
   /** Signed attributes with the tag rewritten to SET OF (the CMS signature
    * input); null when the token carries none (refused later — RFC 3161
    * requires them). */
@@ -207,6 +228,15 @@ export interface ParsedTst {
   /** SPKI algorithm: rsa | ec curve OID. */
   keyAlgorithmOid: string | null;
   keyCurveOid: string | null;
+}
+
+export interface TstCertCandidate {
+  certDer: Uint8Array;
+  spkiDer: Uint8Array;
+  keyAlgorithmOid: string;
+  keyCurveOid: string | null;
+  subjectCn: string | null;
+  sidMatch: boolean;
 }
 
 interface CertFields {
@@ -293,8 +323,10 @@ export function parseTst(token: Uint8Array): ParsedTst {
   const messageImprintHex = toHexLocal(tr.content(imprint[1]));
   if (tst[4].id !== 0x18) throw new TstParseError("TSTInfo.genTime missing");
   const genTime = decodeGeneralizedTime(tr.content(tst[4]));
+  let nonceHex: string | null = null;
   let tsaName: string | null = null;
   for (let i = 5; i < tst.length; i++) {
+    if (tst[i].id === 0x02) nonceHex = toHexLocal(tr.content(tst[i]));
     if (tst[i].id === 0xa0) {
       const gn = tr.children(tst[i], 2)[0];
       if (gn && gn.id === 0xa4) {
@@ -353,11 +385,16 @@ export function parseTst(token: Uint8Array): ParsedTst {
   if (!siKids[idx] || siKids[idx].id !== 0x04) throw new TstParseError("SignerInfo.signature missing");
   const signature = r.content(siKids[idx]);
 
-  // --- signer certificate --------------------------------------------------
-  let signerCertDer: Uint8Array | null = null;
-  let signerSpkiDer: Uint8Array | null = null;
-  let keyAlgorithmOid: string | null = null;
-  let keyCurveOid: string | null = null;
+  // --- signer certificate candidates ---------------------------------------
+  // The certificates SET and the SignerInfo.sid are NOT covered by the CMS
+  // signature (adversarial review M2): an attacker reordering the set or
+  // flipping a sid bit must not be able to downgrade a genuine mark to
+  // "signature does not verify". Every parseable certificate is a candidate
+  // (sid serial match first as a preference); the verification step accepts
+  // the first candidate whose OWN key verifies the signature — fingerprint
+  // and display name then come from that same certificate, so the pinning
+  // invariant (fpr ⇔ verifying key) is preserved by construction.
+  const candidates: TstCertCandidate[] = [];
   const certsTlv = sd.find((t) => t.id === 0xa0);
   if (certsTlv) {
     let wantedSerial: Uint8Array | null = null;
@@ -367,42 +404,41 @@ export function parseTst(token: Uint8Array): ParsedTst {
       if (serial) wantedSerial = r.content(serial);
     }
     const certs = r.children(certsTlv, 4).filter((c) => c.id === 0x30);
-    let matched: { tlv: Tlv; fields: CertFields } | null = null;
     for (const c of certs) {
       const f = parseCert(r, c);
       if (!f) continue;
-      if (matched === null) matched = { tlv: c, fields: f };
-      if (wantedSerial && toHexLocal(f.serial) === toHexLocal(wantedSerial)) {
-        matched = { tlv: c, fields: f };
-        break;
-      }
+      candidates.push({
+        certDer: r.slice(c),
+        spkiDer: f.spkiDer,
+        keyAlgorithmOid: f.keyAlgorithmOid,
+        keyCurveOid: f.keyCurveOid,
+        subjectCn: f.subjectCn,
+        sidMatch: wantedSerial !== null && toHexLocal(f.serial) === toHexLocal(wantedSerial),
+      });
     }
-    if (matched) {
-      signerCertDer = r.slice(matched.tlv);
-      signerSpkiDer = matched.fields.spkiDer;
-      keyAlgorithmOid = matched.fields.keyAlgorithmOid;
-      keyCurveOid = matched.fields.keyCurveOid;
-      if (tsaName === null) tsaName = matched.fields.subjectCn;
-    }
+    candidates.sort((a, b) => Number(b.sidMatch) - Number(a.sidMatch));
   }
+  const preferred = candidates[0] ?? null;
 
   return {
     policyOid,
     hashAlgorithmOid,
     messageImprintHex,
     genTime,
-    tsaName,
+    nonceHex,
+    tsaName: tsaName ?? preferred?.subjectCn ?? null,
     tstInfoDer,
-    signerCertDer,
-    signerSpkiDer,
+    signerCertDer: preferred?.certDer ?? null,
+    signerSpkiDer: preferred?.spkiDer ?? null,
+    certCandidates: candidates,
     signedAttrsDer,
     messageDigestAttr,
     contentTypeOk,
     signatureAlgorithmOid,
     digestAlgorithmOid,
     signature,
-    keyAlgorithmOid,
-    keyCurveOid,
+    keyAlgorithmOid: preferred?.keyAlgorithmOid ?? null,
+    keyCurveOid: preferred?.keyCurveOid ?? null,
   };
 }
 
@@ -457,26 +493,36 @@ async function digest(alg: string, data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest(alg, data as BufferSource));
 }
 
-/** True iff the CMS signature of the token verifies: message-digest attribute
- * matches the TSTInfo bytes AND the signer's signature over the signed
- * attributes verifies against the embedded signer certificate's public key. */
-export async function verifyTstSignature(p: ParsedTst): Promise<boolean> {
-  if (
-    p.signedAttrsDer === null || p.messageDigestAttr === null || !p.contentTypeOk ||
-    p.signerSpkiDer === null
-  ) return false;
-  const attrHash = HASH_OIDS[p.digestAlgorithmOid];
-  if (!attrHash) return false;
-  const tstDigest = await digest(attrHash, p.tstInfoDer);
-  if (toHexLocal(tstDigest) !== toHexLocal(p.messageDigestAttr)) return false;
+export interface TstSignatureResult {
+  valid: boolean;
+  /** The certificate whose key ACTUALLY verified the signature — the only
+   * legitimate fingerprint/pinning target (review M2: the certificates SET
+   * and the sid are not signature-covered, so the verifying key decides). */
+  signerCertDer: Uint8Array | null;
+  signerCn: string | null;
+  /** True when nothing verified because no candidate uses a supported
+   * algorithm (review M3): reported as its own reason, never conflated with
+   * a cryptographic failure. */
+  unsupportedAlgorithm: boolean;
+}
 
-  const sigHash = hashForSignature(p);
-  if (sigHash === null) return false;
+const NO_SIGNER: TstSignatureResult = {
+  valid: false,
+  signerCertDer: null,
+  signerCn: null,
+  unsupportedAlgorithm: false,
+};
+
+async function verifyWithCandidate(
+  p: ParsedTst,
+  c: TstCertCandidate,
+  sigHash: string,
+): Promise<boolean | "unsupported"> {
   try {
-    if (p.keyAlgorithmOid === OID_RSA) {
+    if (c.keyAlgorithmOid === OID_RSA) {
       const key = await crypto.subtle.importKey(
         "spki",
-        p.signerSpkiDer as BufferSource,
+        c.spkiDer as BufferSource,
         { name: "RSASSA-PKCS1-v1_5", hash: sigHash },
         false,
         ["verify"],
@@ -488,20 +534,20 @@ export async function verifyTstSignature(p: ParsedTst): Promise<boolean> {
         p.signedAttrsDer as BufferSource,
       );
     }
-    if (p.keyAlgorithmOid === OID_EC_KEY) {
-      const curve = p.keyCurveOid === OID_P256
+    if (c.keyAlgorithmOid === OID_EC_KEY) {
+      const curve = c.keyCurveOid === OID_P256
         ? { name: "P-256", size: 32 }
-        : p.keyCurveOid === OID_P384
+        : c.keyCurveOid === OID_P384
         ? { name: "P-384", size: 48 }
-        : p.keyCurveOid === OID_P521
+        : c.keyCurveOid === OID_P521
         ? { name: "P-521", size: 66 }
         : null;
-      if (curve === null) return false;
+      if (curve === null) return "unsupported";
       const raw = ecdsaDerToRaw(p.signature, curve.size);
       if (raw === null) return false;
       const key = await crypto.subtle.importKey(
         "spki",
-        p.signerSpkiDer as BufferSource,
+        c.spkiDer as BufferSource,
         { name: "ECDSA", namedCurve: curve.name },
         false,
         ["verify"],
@@ -513,10 +559,46 @@ export async function verifyTstSignature(p: ParsedTst): Promise<boolean> {
         p.signedAttrsDer as BufferSource,
       );
     }
+    return "unsupported";
   } catch {
     return false;
   }
-  return false;
+}
+
+/** CMS signature verification: the message-digest attribute must match the
+ * TSTInfo bytes, and the signature over the signed attributes must verify
+ * against the key of SOME embedded certificate — candidates are tried in
+ * order (sid match first) because the certificates SET is not covered by the
+ * signature (review M2): a reordered set or a flipped sid bit must never
+ * downgrade a genuine mark. The returned certificate is the one that
+ * verified — fingerprint and display name are taken from it and only it. */
+export async function verifyTstSignature(p: ParsedTst): Promise<TstSignatureResult> {
+  if (
+    p.signedAttrsDer === null || p.messageDigestAttr === null || !p.contentTypeOk ||
+    p.certCandidates.length === 0
+  ) return NO_SIGNER;
+  const attrHash = HASH_OIDS[p.digestAlgorithmOid];
+  if (!attrHash) return { ...NO_SIGNER, unsupportedAlgorithm: true };
+  const tstDigest = await digest(attrHash, p.tstInfoDer);
+  if (toHexLocal(tstDigest) !== toHexLocal(p.messageDigestAttr)) return NO_SIGNER;
+
+  const sigHash = hashForSignature(p);
+  if (sigHash === null) return { ...NO_SIGNER, unsupportedAlgorithm: true };
+  let sawSupported = false;
+  for (const c of p.certCandidates) {
+    const outcome = await verifyWithCandidate(p, c, sigHash);
+    if (outcome === "unsupported") continue;
+    sawSupported = true;
+    if (outcome) {
+      return {
+        valid: true,
+        signerCertDer: c.certDer,
+        signerCn: c.subjectCn,
+        unsupportedAlgorithm: false,
+      };
+    }
+  }
+  return { ...NO_SIGNER, unsupportedAlgorithm: !sawSupported };
 }
 
 // ---------------------------------------------------------------------------
@@ -578,10 +660,17 @@ export type QtStatus = "valid" | "absent" | "invalid" | "untrusted";
 
 export interface QualifiedTimestampVerdict {
   status: QtStatus;
-  /** The token commits to exactly the anchor's aggregate_hash. */
+  /** The token commits to exactly the day's aggregate — the RECOMPUTED D9
+   * value when the caller supplies it (adversarial review F1: the declared
+   * aggregate_hash is attacker data; the presumption claim must bind to the
+   * aggregate the entries actually derive). */
   matches_aggregate: boolean | null;
   signature_valid: boolean | null;
   trusted_tsa: boolean | null;
+  /** genTime vs the declared anchor day (D64-style window). false never
+   * degrades the status — the token's own time is self-describing — but the
+   * note says it out loud (adversarial review F4). */
+  gen_time_consistent: boolean | null;
   tsa_name: string | null;
   policy_oid: string | null;
   gen_time: string | null;
@@ -590,10 +679,29 @@ export interface QualifiedTimestampVerdict {
 
 const b64ToBytes = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
+// Same window as the OTS time-consistency leg (D64 amendment, see ots.ts —
+// values duplicated here to keep the module dependency-free for vendoring;
+// the qualified mark lands within hours normally, retries within days).
+const QT_TIME_SKEW_BEFORE_S = 4 * 3600;
+const QT_TIME_MAX_AFTER_S = 14 * 24 * 3600;
+
+function genTimeConsistent(anchorDate: unknown, genTimeIso: string): boolean | null {
+  if (typeof anchorDate !== "string") return null;
+  const dayStartS = Date.parse(anchorDate + "T00:00:00Z") / 1000;
+  const genS = Date.parse(genTimeIso) / 1000;
+  if (!Number.isFinite(dayStartS) || !Number.isFinite(genS)) return null;
+  return genS >= dayStartS - QT_TIME_SKEW_BEFORE_S &&
+    genS <= dayStartS + 86_400 + QT_TIME_MAX_AFTER_S;
+}
+
 export async function verifyQualifiedTimestamp(
   // deno-lint-ignore no-explicit-any
   anchor: any,
   trustedFprs: Set<string>,
+  /** The RECOMPUTED D9 aggregate (lowercase hex). Absent ⇒ fall back to the
+   * declared aggregate_hash (standalone use); the reference verifier always
+   * passes the recomputed value. */
+  expectedAggregateHex?: string,
 ): Promise<QualifiedTimestampVerdict> {
   const qt = anchor?.qualified_timestamp;
   if (qt == null) {
@@ -602,6 +710,7 @@ export async function verifyQualifiedTimestamp(
       matches_aggregate: null,
       signature_valid: null,
       trusted_tsa: null,
+      gen_time_consistent: null,
       tsa_name: null,
       policy_oid: null,
       gen_time: null,
@@ -623,53 +732,78 @@ export async function verifyQualifiedTimestamp(
       matches_aggregate: null,
       signature_valid: null,
       trusted_tsa: null,
+      gen_time_consistent: null,
       tsa_name: null,
       policy_oid: null,
       gen_time: null,
       note: "unreadable token (not a valid RFC 3161 TimeStampToken)",
     };
   }
+  // Bind to the RECOMPUTED aggregate when supplied (review F1): a genuine
+  // (hash, token) pair stolen from a published export must never dress a
+  // fabricated entry set with an [OK] qualified-timestamp line.
+  const expected = (expectedAggregateHex ?? String(anchor.aggregate_hash ?? "")).toLowerCase();
   const matches = parsed.hashAlgorithmOid === OID_SHA256 &&
-    parsed.messageImprintHex === String(anchor.aggregate_hash ?? "").toLowerCase();
+    parsed.messageImprintHex === expected;
   if (!matches) {
     return {
       status: "invalid",
       matches_aggregate: false,
       signature_valid: null,
       trusted_tsa: null,
+      gen_time_consistent: null,
       tsa_name: parsed.tsaName,
       policy_oid: parsed.policyOid,
       gen_time: parsed.genTime,
-      note: "the token does not commit to this aggregate_hash",
+      note: "the token does not commit to this day's aggregate hash (recomputed per D9)",
     };
   }
-  const signature_valid = await verifyTstSignature(parsed);
-  if (!signature_valid) {
+  const sig = await verifyTstSignature(parsed);
+  if (!sig.valid) {
     return {
       status: "invalid",
       matches_aggregate: true,
       signature_valid: false,
       trusted_tsa: null,
+      gen_time_consistent: null,
       tsa_name: parsed.tsaName,
       policy_oid: parsed.policyOid,
       gen_time: parsed.genTime,
-      note: "the TSA signature over the token does not verify",
+      // Review M3: an algorithm this verifier does not implement is its own
+      // declared reason — never conflated with a cryptographic failure.
+      note: sig.unsupportedAlgorithm
+        ? "unsupported signature algorithm for this verifier — check the token with standard RFC 3161 tooling (e.g. openssl ts)"
+        : "the TSA signature over the token does not verify",
     };
   }
-  const fpr = parsed.signerCertDer === null
+  // Display name: the TSTInfo tsa field (signature-covered) wins; else the
+  // CN of the certificate that actually verified the signature.
+  const tsaName = parsed.tsaName ?? sig.signerCn;
+  // Review H1/F4: a genuine token whose genTime sits outside the declared
+  // day's window (D64-style bounds) proves existence at ITS OWN genTime,
+  // never the declared day — the human line must not read [OK] and the
+  // limitation is said in the note. The STATUS is unchanged: a later
+  // re-timestamp on the same aggregate is the DECLARED lifecycle strategy
+  // (SPEC §7.1) and remains a genuine, trusted mark.
+  const gen_time_consistent = genTimeConsistent(anchor?.anchor_date, parsed.genTime);
+  const lateSuffix = gen_time_consistent === false
+    ? ` — issued outside the declared day's window: it proves existence at its own genTime, not the declared day`
+    : "";
+  const fpr = sig.signerCertDer === null
     ? null
-    : toHexLocal(await digest("SHA-256", parsed.signerCertDer));
+    : toHexLocal(await digest("SHA-256", sig.signerCertDer));
   const trusted = fpr !== null && trustedFprs.has(fpr);
   return {
     status: trusted ? "valid" : "untrusted",
     matches_aggregate: true,
     signature_valid: true,
     trusted_tsa: trusted,
-    tsa_name: parsed.tsaName,
+    gen_time_consistent,
+    tsa_name: tsaName,
     policy_oid: parsed.policyOid,
     gen_time: parsed.genTime,
-    note: trusted
-      ? `valid · ${parsed.tsaName ?? "(unnamed TSA)"} · ${parsed.genTime}`
-      : "valid token, untrusted TSA, no presumption",
+    note: (trusted
+      ? `valid · ${tsaName ?? "(unnamed TSA)"} · ${parsed.genTime}`
+      : "valid token, untrusted TSA, no presumption") + lateSuffix,
   };
 }

@@ -269,12 +269,15 @@ export function renderHuman(
           lines.push(`[--] Qualified timestamp of ${a.anchor_date} — absent.`);
           break;
         case "valid":
-          lines.push(`[OK] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`);
+          // A late mark (re-timestamp, or a token that postdates the declared
+          // day's window) stays genuine but must not read [OK] for the
+          // declared day (review H1): the note carries the limitation.
+          lines.push(
+            `[${qt.gen_time_consistent === false ? "WARN" : "OK"}] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`,
+          );
           break;
         case "untrusted":
-          lines.push(
-            `[WARN] Qualified timestamp of ${a.anchor_date} — valid token, untrusted TSA, no presumption.`,
-          );
+          lines.push(`[WARN] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`);
           break;
         case "invalid":
           lines.push(
@@ -329,8 +332,16 @@ export function renderHuman(
     );
   }
   // D98 (g), binding semantics: the presumption claim names the AGGREGATE —
-  // "every event has its own timestamp" is a FORBIDDEN formulation.
-  if (anchors.some((a) => a.qualified_timestamp?.status === "valid")) {
+  // "every event has its own timestamp" is a FORBIDDEN formulation. Gated on
+  // the overall result like the Bitcoin note above (adversarial review F1):
+  // a tampered or unverified export never earns the presumption sentence.
+  if (
+    (result === "verified" || result === "partial") &&
+    anchors.some((a) =>
+      a.qualified_timestamp?.status === "valid" &&
+      a.qualified_timestamp?.gen_time_consistent !== false
+    )
+  ) {
     lines.push(
       "Note: the qualified timestamp attaches the eIDAS art. 42 presumption to the daily aggregate; every event verifiably contained in it inherits that anteriority through deterministic, reproducible recomputation.",
     );
