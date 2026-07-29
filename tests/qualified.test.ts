@@ -18,7 +18,7 @@ import {
   verifyTstSignature,
 } from "../src/tst_lite.ts";
 import { verifyAnchors } from "../src/ots.ts";
-import { verifyChain } from "../src/verify.ts";
+import { aggregateHash, verifyChain } from "../src/verify.ts";
 import { assess, renderHuman } from "../src/render.ts";
 import { attributeEvents, trustedKeyBytes } from "../src/issuer.ts";
 import { exportShapeProblems } from "../src/shape.ts";
@@ -92,12 +92,15 @@ Deno.test("tst_lite: tsa-trust registry shape gate", () => {
 Deno.test("qualified verdict: absent / valid / untrusted / invalid, on the aggregate", async () => {
   // In-window mark: the token was issued on THIS day's aggregate.
   const anchor = readJson("export-qualified-today.json").anchors[0];
+  // Genuine vector: the recomputed aggregate equals the declared one — the
+  // caller must supply it either way (the parameter has no fallback).
+  const agg = anchor.aggregate_hash;
   const bare = { ...anchor };
   delete bare.qualified_timestamp;
 
-  assertEquals((await verifyQualifiedTimestamp(bare, trustLocal())).status, "absent");
+  assertEquals((await verifyQualifiedTimestamp(bare, trustLocal(), agg)).status, "absent");
 
-  const valid = await verifyQualifiedTimestamp(anchor, trustLocal());
+  const valid = await verifyQualifiedTimestamp(anchor, trustLocal(), agg);
   assertEquals(valid.status, "valid");
   assertEquals(valid.matches_aggregate, true);
   assertEquals(valid.signature_valid, true);
@@ -105,23 +108,23 @@ Deno.test("qualified verdict: absent / valid / untrusted / invalid, on the aggre
   assertEquals(valid.gen_time_consistent, true);
   assertStringIncludes(valid.note, "valid · Humarch Test TSA");
 
-  const untrusted = await verifyQualifiedTimestamp(anchor, trustNone());
+  const untrusted = await verifyQualifiedTimestamp(anchor, trustNone(), agg);
   assertEquals(untrusted.status, "untrusted");
   assertEquals(untrusted.note, "valid token, untrusted TSA, no presumption");
 
   const mismatch = readJson("export-qualified-mismatch.json").anchors[0];
-  const inv = await verifyQualifiedTimestamp(mismatch, trustLocal());
+  const inv = await verifyQualifiedTimestamp(mismatch, trustLocal(), mismatch.aggregate_hash);
   assertEquals(inv.status, "invalid");
   assertEquals(inv.matches_aggregate, false, "a token for another digest never binds this day");
 
   const malformed = readJson("export-qualified-malformed.json").anchors[0];
-  const bad = await verifyQualifiedTimestamp(malformed, trustLocal());
+  const bad = await verifyQualifiedTimestamp(malformed, trustLocal(), malformed.aggregate_hash);
   assertEquals(bad.status, "invalid");
   assertStringIncludes(bad.note, "unreadable token");
 
   // Oversize base64: declared invalid, never buffered or crashed.
   const huge = { ...anchor, qualified_timestamp: { token_base64: "A".repeat(90_000) } };
-  assertEquals((await verifyQualifiedTimestamp(huge, trustLocal())).status, "invalid");
+  assertEquals((await verifyQualifiedTimestamp(huge, trustLocal(), agg)).status, "invalid");
 });
 
 Deno.test("qualified verdict binds the RECOMPUTED aggregate, not the declared one (review F1)", async () => {
@@ -136,11 +139,35 @@ Deno.test("qualified verdict binds the RECOMPUTED aggregate, not the declared on
   assertStringIncludes(v.note, "recomputed per D9");
 });
 
+Deno.test("qualified verdict: the recomputed aggregate is REQUIRED — no fallback to the declared field (external audit)", async () => {
+  // The public signature must not permit the unsafe call: a third-party
+  // implementer who omits the recomputed aggregate gets a declared invalid
+  // naming the real cause, never a silent bind to attacker-supplied data.
+  const anchor = readJson("export-qualified-today.json").anchors[0];
+  // deno-lint-ignore no-explicit-any
+  const call = verifyQualifiedTimestamp as any;
+  for (const bad of [undefined, "", "not-hex", "abc", anchor.aggregate_hash.slice(0, 63)]) {
+    const v = await call(anchor, trustLocal(), bad);
+    assertEquals(v.status, "invalid", `expected invalid for ${JSON.stringify(bad)}`);
+    assertEquals(v.matches_aggregate, null);
+    assertStringIncludes(v.note, "no recomputed aggregate supplied");
+  }
+  // And the declared field is never consulted as a substitute: a genuine
+  // token whose day was rebuilt from forged entries stays invalid.
+  const forged = structuredClone(anchor);
+  forged.anchor_entries_for_aggregate[0].last_event_hash = "beef".padEnd(64, "0");
+  const recomputed = await aggregateHash(forged.anchor_date, forged.anchor_entries_for_aggregate);
+  assert(recomputed !== forged.aggregate_hash, "the forged entries no longer produce the declared hash");
+  const v = await verifyQualifiedTimestamp(forged, trustLocal(), recomputed);
+  assertEquals(v.status, "invalid");
+  assertEquals(v.matches_aggregate, false);
+});
+
 Deno.test("qualified verdict: a late mark stays genuine but never claims the declared day (review H1)", async () => {
   // The real-anchor vector's token was issued weeks after its anchor day —
   // the re-timestamp case declared by SPEC §7.1.
   const late = readJson("export-qualified.json").anchors[0];
-  const v = await verifyQualifiedTimestamp(late, trustLocal());
+  const v = await verifyQualifiedTimestamp(late, trustLocal(), late.aggregate_hash);
   assertEquals(v.status, "valid", "a re-timestamp is still a genuine, trusted mark");
   assertEquals(v.gen_time_consistent, false);
   assertStringIncludes(v.note, "issued outside the declared day's window");

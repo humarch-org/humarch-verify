@@ -195,6 +195,9 @@ export async function verifyAnchors(
     // (adversarial review F1): the declared aggregate_hash is attacker data.
     // Defence in depth: the leg is typed-fail-safe by construction, but a
     // throw here must degrade to a declared invalid, never break the run.
+    // Unreadable tokens are already handled INSIDE the call: whatever reaches
+    // this catch failed later (e.g. WebCrypto refusing a malformed key), so
+    // the note must not blame the parser (external audit, 2026-07-29).
     let qualified_timestamp;
     try {
       qualified_timestamp = await verifyQualifiedTimestamp(a, trustedFprs, aggExpected);
@@ -208,7 +211,7 @@ export async function verifyAnchors(
         tsa_name: null,
         policy_oid: null,
         gen_time: null,
-        note: "unreadable token (not a valid RFC 3161 TimeStampToken)",
+        note: "token verification failed unexpectedly",
       };
     }
 

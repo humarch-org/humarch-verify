@@ -698,11 +698,31 @@ export async function verifyQualifiedTimestamp(
   // deno-lint-ignore no-explicit-any
   anchor: any,
   trustedFprs: Set<string>,
-  /** The RECOMPUTED D9 aggregate (lowercase hex). Absent ⇒ fall back to the
-   * declared aggregate_hash (standalone use); the reference verifier always
-   * passes the recomputed value. */
-  expectedAggregateHex?: string,
+  /** The aggregate hash RECOMPUTED per §7 from `anchor_entries_for_aggregate`
+   * (lowercase hex, 64 chars) — REQUIRED. It is deliberately not optional and
+   * has no fallback to `anchor.aggregate_hash`: that field is supplied by
+   * whoever produced the export, so binding to it would let a genuine
+   * (hash, token) pair lifted from a published export vouch for a fabricated
+   * entry set. A signature that permits the unsafe call is a defect of the
+   * signature (external audit, 2026-07-29). */
+  expectedAggregateHex: string,
 ): Promise<QualifiedTimestampVerdict> {
+  // A caller that cannot supply a well-formed recomputed aggregate gets a
+  // declared `invalid` naming the real cause — never a silent never-match
+  // that reads like a bad token.
+  if (!/^[0-9a-f]{64}$/i.test(String(expectedAggregateHex ?? ""))) {
+    return {
+      status: "invalid",
+      matches_aggregate: null,
+      signature_valid: null,
+      trusted_tsa: null,
+      gen_time_consistent: null,
+      tsa_name: null,
+      policy_oid: null,
+      gen_time: null,
+      note: "no recomputed aggregate supplied to bind the token to (§7.1 step 2)",
+    };
+  }
   const qt = anchor?.qualified_timestamp;
   if (qt == null) {
     return {
@@ -739,10 +759,10 @@ export async function verifyQualifiedTimestamp(
       note: "unreadable token (not a valid RFC 3161 TimeStampToken)",
     };
   }
-  // Bind to the RECOMPUTED aggregate when supplied (review F1): a genuine
+  // Bind to the RECOMPUTED aggregate (review F1 + external audit): a genuine
   // (hash, token) pair stolen from a published export must never dress a
   // fabricated entry set with an [OK] qualified-timestamp line.
-  const expected = (expectedAggregateHex ?? String(anchor.aggregate_hash ?? "")).toLowerCase();
+  const expected = expectedAggregateHex.toLowerCase();
   const matches = parsed.hashAlgorithmOid === OID_SHA256 &&
     parsed.messageImprintHex === expected;
   if (!matches) {
