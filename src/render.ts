@@ -60,10 +60,18 @@ export function anchorBindsChainHead(
   anchors: AnchorVerdict[],
 ): boolean {
   if (chain.verified_through_sequence === null) return false;
+  // The head is resolved BY SEQUENCE NUMBER — the one inference SPEC §8
+  // rule 10 tells consumers not to make. It is sound only while the number
+  // identifies exactly one event, so refuse to bind when it does not
+  // (adversarial review 2026-08-02): shape.ts already rejects duplicate
+  // sequence numbers, and a library caller that skipped it must not get a
+  // time property resolved against an attacker-chosen twin.
   // deno-lint-ignore no-explicit-any
-  const headEvent = (exp.events ?? []).find((e: any) =>
+  const candidates = (exp.events ?? []).filter((e: any) =>
     e.sequence_number === chain.verified_through_sequence
   );
+  if (candidates.length !== 1) return false;
+  const headEvent = candidates[0];
   if (typeof headEvent?.event_hash !== "string") return false;
   const head = headEvent.event_hash.toLowerCase();
   const tenant = String(exp.tenant_id ?? "").toLowerCase();
@@ -200,7 +208,7 @@ export function renderHuman(
       : 0;
   lines.push("Humarch — Registry verification");
   lines.push(
-    `Tenant ${tenantId.slice(0, 8)}…  ·  sequences ${chain.verified_from_sequence ?? "?"}–${
+    `Tenant ${terminalSafe([...String(tenantId)].slice(0, 8).join(""), 32)}…  ·  sequences ${chain.verified_from_sequence ?? "?"}–${
       chain.verified_through_sequence ?? "?"
     } (${eventCount} events)`,
   );
@@ -237,14 +245,14 @@ export function renderHuman(
       );
     } else if (a.time_consistent === false) {
       lines.push(
-        `[ERROR] Anchor of ${a.anchor_date} — the Bitcoin attestation is real but does not prove the declared day: ${a.note}.`,
+        `[ERROR] Anchor of ${a.anchor_date} — the Bitcoin attestation is real but does not prove the declared day: ${displaySafe(a.note)}.`,
       );
     } else if (a.bitcoin_verified === true) {
       const block = anchorBlockForDisplay(a);
       lines.push(
         `[OK] Anchor of ${a.anchor_date} — recorded on Bitcoin${
           block !== null ? ` in block ${block}` : ""
-        } (${a.note}).`,
+        } (${displaySafe(a.note)}).`,
       );
     } else if (
       a.bitcoin_verified === false || !a.aggregate_recomputed ||
@@ -252,11 +260,11 @@ export function renderHuman(
     ) {
       lines.push(
         `[ERROR] Anchor of ${a.anchor_date} — verification failed (${
-          a.note || "invalid attestation"
+          displaySafe(a.note || "invalid attestation")
         }).`,
       );
     } else {
-      lines.push(`[--] Anchor of ${a.anchor_date} — ${a.note}.`);
+      lines.push(`[--] Anchor of ${a.anchor_date} — ${displaySafe(a.note)}.`);
     }
 
     // Dual anchor (D98 (e)): one ADDITIVE line per anchor, always about the
@@ -274,15 +282,15 @@ export function renderHuman(
           // day's window) stays genuine but must not read [OK] for the
           // declared day (review H1): the note carries the limitation.
           lines.push(
-            `[${qt.gen_time_consistent === false ? "WARN" : "OK"}] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`,
+            `[${qt.gen_time_consistent === false ? "WARN" : "OK"}] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`,
           );
           break;
         case "untrusted":
-          lines.push(`[WARN] Qualified timestamp of ${a.anchor_date} — ${qt.note}.`);
+          lines.push(`[WARN] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`);
           break;
         case "invalid":
           lines.push(
-            `[WARN] Qualified timestamp of ${a.anchor_date} — invalid (${qt.note}).`,
+            `[WARN] Qualified timestamp of ${a.anchor_date} — invalid (${displaySafe(qt.note)}).`,
           );
           break;
       }
@@ -351,6 +359,84 @@ export function renderHuman(
 }
 
 /**
+ * Terminal-safe rendering of an export-supplied machine value (external
+ * audit 2026-08-02, finding 2).
+ *
+ * The shape gate refuses Cc/Cf/Zl/Zp in the fields it checks, but a public
+ * renderer must not rest on a precondition its own signature does not
+ * express: a direct caller can pass anything. The three fields rendered by
+ * renderArtifactSearch are machine values (a UUID, an event-type token, an
+ * ISO timestamp), printable ASCII by construction - everything else is
+ * escaped to its code point, so a hostile export can neither drive the
+ * terminal (V2) nor visually reorder the verdict with a bidi override.
+ * Values are length-capped too: a megabyte-long identifier is not a
+ * rendering a reader can act on.
+ *
+ * Exported: the --trace evidence bundle renders declared payload refs and
+ * MUST reuse this, never re-derive it.
+ */
+export function terminalSafe(value: string, maxLength = 128): string {
+  const clipped = value.length > maxLength
+    ? value.slice(0, maxLength) + "..."
+    : value;
+  let out = "";
+  for (const ch of clipped) {
+    const cp = ch.codePointAt(0) as number;
+    out += cp >= 0x20 && cp <= 0x7e
+      ? ch
+      : "<U+" + cp.toString(16).toUpperCase().padStart(4, "0") + ">";
+  }
+  return out;
+}
+/**
+ * Display-safe rendering of a human-facing string that may legitimately
+ * carry typography (the verifier's own middle dots and em dashes, a TSA's
+ * accented name) but may also carry an export-supplied fragment.
+ *
+ * Escapes exactly what can drive or reorder a terminal - controls, format
+ * characters (the bidi overrides and isolates among them), line and
+ * paragraph separators - and caps the length. Strong-directional LETTERS
+ * can still reorder a line visually; that is inherent to displaying a name
+ * in a right-to-left script and cannot be neutralized without mangling
+ * legitimate values, so it is accepted and bounded rather than pretended
+ * away. For machine identifiers use terminalSafe instead: they are ASCII
+ * by construction and deserve the stricter rule.
+ */
+export function displaySafe(value: string, maxLength = 200): string {
+  const clipped = value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
+  return clipped.replace(
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+    (ch) =>
+      "<U+" + (ch.codePointAt(0) as number).toString(16).toUpperCase().padStart(4, "0") + ">",
+  );
+}
+/**
+ * Value-preserving escaping of the characters JSON.stringify emits raw
+ * (external audit 2026-08-02, finding 2). JSON.stringify escapes C0 inside
+ * string literals, but leaves C1 (U+0080-U+009F), the format characters
+ * (bidi overrides and isolates, zero-width joiners, the BOM) and the line
+ * and paragraph separators untouched. The verdict goes to stdout, which is
+ * a terminal as often as it is a pipe, so those characters must not travel
+ * raw.
+ *
+ * Rewriting each as its uXXXX escape is value-preserving: JSON.parse of the
+ * result is deep-equal to the object. The structural whitespace of a
+ * pretty-printed document (LF, CR, TAB) is exempt — inside a string literal
+ * stringify has already escaped those, so a raw one is always structure,
+ * and escaping it would produce invalid JSON.
+ */
+export function jsonSafe(text: string): string {
+  return text.replace(
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+    (ch) => {
+      const cp = ch.codePointAt(0) as number;
+      if (cp === 0x0a || cp === 0x0d || cp === 0x09) return ch; // structure
+      return "\\u" + cp.toString(16).padStart(4, "0");
+    },
+  );
+}
+
+/**
  * Rendering of the --find-artifact search (D100, SPEC §1.2.5) — a SEPARATE
  * function on purpose: the verdict rendering above and assess() are the
  * normative surface and never learn about the search. Wording discipline:
@@ -367,17 +453,17 @@ export function renderArtifactSearch(
   verifiedThrough: number | null,
 ): string {
   const range = verifiedFrom !== null && verifiedThrough !== null
-    ? `${verifiedFrom}-${verifiedThrough}`
+    ? `${Number(verifiedFrom)}-${Number(verifiedThrough)}`
     : "none";
   const lines: string[] = [];
   lines.push("");
-  lines.push(`Artifact search — ${target}`);
+  lines.push(`Artifact search — ${terminalSafe(target, 64)}`);
   lines.push(
     `[--] Found: ${matches.length} event${matches.length === 1 ? "" : "s"} declaring this hash (declared references only, SPEC 1.2.5 — nothing binds the artifact to the event).`,
   );
   for (const m of matches) {
     lines.push(
-      `     sequence ${m.sequence_number} · ${m.event_type} · event ${m.event_id} · occurred ${m.occurred_at} — ${
+      `     sequence ${Number(m.sequence_number)} · ${terminalSafe(m.event_type, 48)} · event ${terminalSafe(m.event_id, 48)} · occurred ${terminalSafe(m.occurred_at, 32)} — ${
         m.within_verified_range
           ? `inside the verified range (${range})`
           : `OUTSIDE the verified range (${range}): integrity is not established for this event`

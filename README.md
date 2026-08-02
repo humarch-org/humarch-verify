@@ -30,6 +30,21 @@ Exit codes: `0` verified · `2` chain/signatures invalid · `3` anchor/OTS not
 verified · `4` malformed input · `5` declared partial verification · `6` keys
 not attributed to a trusted issuer.
 
+Two things to know about reading them (spec 1.4.0):
+
+- **An exit code is only a verdict when stdout carries one.** Every
+  contractual outcome above prints a verdict — human-readable, or a
+  `humarch-verify/v1` document under `--json`. A crash (an out-of-memory
+  abort, a killed process) can surface as a bare exit code with empty
+  stdout, and on some platforms that code collides with a contractual one.
+  Automation MUST require a parsed verdict on stdout before trusting the
+  code.
+- **Exit 4 covers more than a syntax error**: besides unparsable JSON and a
+  wrong `format`, it now also covers an export whose `sequence_number` or
+  `event_id` repeats, and one carrying a control, format or line-separator
+  character in a machine field (SPEC §8 rules 8 and 9). These are documents
+  the verifier refuses to issue a verdict about, not tampering findings.
+
 **VERIFIED (exit 0) is the conjunction of three properties**, each declared
 on its own line of the output:
 

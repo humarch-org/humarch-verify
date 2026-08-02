@@ -5,14 +5,35 @@
 // nothing else: no result of it may ever move the verdict, the exit code or
 // the VerdictProperties (the --tsa-trust/D98 neutrality pattern).
 //
-// Two safety properties the CLI relies on:
-//   * PURE, ITERATIVE walk — hostile payload nesting must exhaust neither
-//     the stack nor the gate (same discipline as shape.ts checkFinite);
+// Safety properties (external audit 2026-08-02, findings 1 and 4):
+//   * The verified prefix is POSITIONAL. verifyChain walks the events sorted
+//     by sequence_number and stops at the first failure, so what it verified
+//     is a prefix of that list — NOT "every event whose sequence_number is
+//     ≤ verified_through". With a duplicated sequence number the two are
+//     different sets, and the audit's reproduction had a tampered event
+//     reported as inside the verified range. This module therefore walks the
+//     same sorted list and marks by POSITION, stopping the prefix at the
+//     first sequence that is not strictly greater than its predecessor. The
+//     invariant this rests on is that find.ts and verify.ts sort the SAME
+//     array with the SAME comparator (ascending sequence_number): keep them
+//     in step. shape.ts rejects duplicates outright as a second, independent
+//     layer, so on the CLI path the two readings cannot even diverge.
+//   * The bounds are treated as a FAIL-SAFE pair: anything that is not a
+//     finite number means "nothing is known to be verified", never "all of
+//     it is".
+//   * The walk is PURE, ITERATIVE and BOUNDED. Accessors are never invoked
+//     (only data property descriptors are read) and a reflective operation
+//     that throws never escapes — but a Proxy's ownKeys/getOwnPropertyDescriptor
+//     traps ARE invoked and remain arbitrary code, and a generative Proxy can
+//     mint children forever: the visited set stops cycles, and a hard node
+//     budget stops everything else. Call this on JSON.parse output; on any
+//     other object graph the budget is the only guarantee.
 //   * NO PAYLOAD TEXT crosses this boundary — payload strings never pass
-//     the anti-control-byte gate (shape.ts covers identifiers only), so the
-//     match report carries exclusively fields shape.ts already checked
-//     (event_id, event_type, occurred_at) plus numbers. Echoing payload
-//     values or paths here would reopen the V2 terminal-injection hole.
+//     the anti-control-character gate (shape.ts covers identifiers only),
+//     so the match report carries exclusively fields shape.ts already
+//     checked (event_id, event_type, occurred_at) plus numbers. Echoing
+//     payload values or paths here would reopen the V2 terminal-injection
+//     hole.
 
 const TARGET_RE = /^[0-9a-fA-F]{64}$/;
 
@@ -21,7 +42,7 @@ export interface ArtifactMatch {
   event_type: string;
   sequence_number: number;
   occurred_at: string;
-  /** true iff the sequence falls inside [verified_from, verified_through] */
+  /** true iff the event belongs to the prefix verifyChain actually verified */
   within_verified_range: boolean;
 }
 
@@ -29,30 +50,78 @@ export function isArtifactTarget(value: string): boolean {
   return TARGET_RE.test(value);
 }
 
+/**
+ * Own enumerable DATA values of a container, defensively.
+ *
+ * Object.values() and array indexing invoke getters and Proxy traps: on a
+ * hostile object graph that is arbitrary code running inside the verifier.
+ * Reading descriptors and keeping only those that carry a `value` skips
+ * accessors entirely (they are reported as absent, never called), and every
+ * reflective step is inside the try — a Proxy whose ownKeys trap throws
+ * yields "no children", never an exception escaping to a stack trace.
+ */
+function dataValues(container: object): unknown[] {
+  const out: unknown[] = [];
+  try {
+    for (const key of Reflect.ownKeys(container)) {
+      try {
+        const d = Object.getOwnPropertyDescriptor(container, key);
+        if (d !== undefined && d.enumerable === true && "value" in d) out.push(d.value);
+      } catch {
+        // one unreadable property never invalidates the others
+      }
+    }
+  } catch {
+    return [];
+  }
+  return out;
+}
+
+/**
+ * Hard ceiling on the nodes one payload walk may visit. A 256 KB request body
+ * (the ingestion limit) cannot approach it; a hostile generative Proxy would
+ * otherwise run forever. Exhausting the budget ends the walk: the search is
+ * best-effort by contract, and its output already declares that "not found"
+ * does not mean "not there".
+ */
+const MAX_NODES = 2_000_000;
+
 /** Case-insensitive equality of ANY payload string value with the target. */
 function payloadDeclares(payload: unknown, targetLower: string): boolean {
+  let budget = MAX_NODES;
   const stack: unknown[] = [payload];
+  // Cycles are impossible in JSON.parse output but trivial for a direct
+  // caller of this exported function (audit finding 4): without this set the
+  // walk never terminates.
+  const seen = new WeakSet<object>();
   while (stack.length > 0) {
+    if (budget-- <= 0) return false; // bounded by construction
     const v = stack.pop();
     if (typeof v === "string") {
       if (v.length === 64 && v.toLowerCase() === targetLower) return true;
-    } else if (Array.isArray(v)) {
-      for (const x of v) stack.push(x);
-    } else if (typeof v === "object" && v !== null) {
-      // Values only, never keys: identifiers are recommended as values by
-      // the convention, and keys are exactly where hostile text lives.
-      for (const x of Object.values(v)) stack.push(x);
+      continue;
     }
+    if (typeof v !== "object" || v === null) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    // Values only, never keys: the convention recommends identifiers as
+    // values, and keys are exactly where hostile text lives. Arrays need no
+    // special case — their indices are own enumerable data properties, and
+    // `length` is not enumerable.
+    for (const child of dataValues(v)) stack.push(child);
   }
   return false;
 }
 
 /**
  * Events of the export whose payload declares `target` (64 hex chars) as a
- * string value, in sequence order. `verifiedFrom`/`verifiedThrough` come
- * from the chain verdict: a match beyond the point of rupture of a tampered
- * export is reported, but marked outside the verified range — integrity
- * says nothing about it.
+ * string value, in sequence order.
+ *
+ * `verifiedFrom`/`verifiedThrough` come from the chain verdict. A match is
+ * `within_verified_range` only when it belongs to the positional prefix
+ * verifyChain verified: a match beyond the point of rupture of a tampered
+ * export — or in an export whose sequence numbering is not strictly
+ * increasing — is reported, but never credited with integrity.
  */
 export function findArtifact(
   // deno-lint-ignore no-explicit-any
@@ -66,17 +135,39 @@ export function findArtifact(
   // deno-lint-ignore no-explicit-any
   const events = [...((exp?.events ?? []) as any[])]
     .sort((a, b) => a.sequence_number - b.sequence_number);
-  for (const ev of events) {
-    if (!payloadDeclares(ev?.payload, targetLower)) continue;
+
+  // Length of the positional prefix verifyChain can have verified: the
+  // leading run of strictly increasing sequence numbers, cut at
+  // verified_through. Anything at or past the first repetition (or gap
+  // beyond verified_through) is outside, whatever its number says.
+  let prefixLength = 0;
+  // Fail-safe: any bound that is not a finite number means nothing is known
+  // to be verified (a `null`-only guard let `undefined` or NaN credit the
+  // whole export - adversarial review of this remedy, 2026-08-02).
+  if (
+    typeof verifiedFrom === "number" && Number.isFinite(verifiedFrom) &&
+    typeof verifiedThrough === "number" && Number.isFinite(verifiedThrough)
+  ) {
+    let prev: number | null = null;
+    for (const ev of events) {
+      const seq = ev?.sequence_number;
+      if (typeof seq !== "number" || !Number.isFinite(seq)) break;
+      if (prev !== null && seq <= prev) break; // duplicate or non-monotonic
+      if (seq < verifiedFrom || seq > verifiedThrough) break;
+      prev = seq;
+      prefixLength++;
+    }
+  }
+
+  events.forEach((ev, index) => {
+    if (!payloadDeclares(ev?.payload, targetLower)) return;
     matches.push({
       event_id: String(ev.event_id),
       event_type: String(ev.event_type),
       sequence_number: Number(ev.sequence_number),
       occurred_at: String(ev.occurred_at),
-      within_verified_range: verifiedFrom !== null && verifiedThrough !== null &&
-        Number(ev.sequence_number) >= verifiedFrom &&
-        Number(ev.sequence_number) <= verifiedThrough,
+      within_verified_range: index < prefixLength,
     });
-  }
+  });
   return matches;
 }

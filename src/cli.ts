@@ -11,7 +11,7 @@
 // are ADDITIVE: they never change these.
 import { verifyChain } from "./verify.ts";
 import { type OtsLevel, verifyAnchors } from "./ots.ts";
-import { assess, renderArtifactSearch, renderHuman } from "./render.ts";
+import { assess, jsonSafe, renderArtifactSearch, renderHuman, terminalSafe } from "./render.ts";
 import { findArtifact, isArtifactTarget } from "./find.ts";
 import { exportShapeProblems } from "./shape.ts";
 import {
@@ -30,6 +30,17 @@ function usage(): never {
   Deno.exit(4);
 }
 
+/**
+ * The only part of a JSON parse error we are willing to show: V8 embeds a
+ * verbatim excerpt of the offending bytes in `message`, so echoing it hands
+ * a hostile file direct control of the reader's terminal (adversarial review
+ * of the F2 remedy, 2026-08-02). The position is a number and is useful; the
+ * excerpt is attacker text and is not.
+ */
+function parsePosition(err: unknown): string {
+  const m = /position (\d+)/.exec(String((err as Error)?.message ?? ""));
+  return m ? `(at byte ${m[1]})` : "";
+}
 async function main(): Promise<void> {
   const args = [...Deno.args];
   let file: string | null = null;
@@ -119,12 +130,12 @@ async function main(): Promise<void> {
         });
         if (res.status >= 300 && res.status < 400) {
           console.error(
-            `--issuer ${issuerSource} redirects (HTTP ${res.status}): refused — a redirect can downgrade the TLS channel; pass the final https:// URL`,
+            `--issuer ${terminalSafe(issuerSource, 200)} redirects (HTTP ${res.status}): refused — a redirect can downgrade the TLS channel; pass the final https:// URL`,
           );
           Deno.exit(4);
         }
         if (!res.ok) {
-          console.error(`cannot read --issuer ${issuerSource}: HTTP ${res.status}`);
+          console.error(`cannot read --issuer ${terminalSafe(issuerSource, 200)}: HTTP ${res.status}`);
           Deno.exit(4);
         }
         text = await res.text();
@@ -132,19 +143,21 @@ async function main(): Promise<void> {
         text = Deno.readTextFileSync(issuerSource);
       }
     } catch (err) {
-      console.error(`cannot read --issuer ${issuerSource}: ${(err as Error).message}`);
+      console.error(
+        `cannot read --issuer ${terminalSafe(issuerSource, 200)}: ${terminalSafe((err as Error).message, 200)}`,
+      );
       Deno.exit(4);
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch (err) {
-      console.error(`malformed issuer document: ${(err as Error).message}`);
+      console.error(`malformed issuer document: not valid JSON ${terminalSafe(parsePosition(err), 32)}`);
       Deno.exit(4);
     }
     const problems = issuerShapeProblems(parsed);
     if (problems.length > 0) {
-      console.error(`malformed issuer document: ${problems[0]}`);
+      console.error(`malformed issuer document: ${terminalSafe(problems[0], 200)}`);
       Deno.exit(4);
     }
     issuer = parsed as IssuerRegistry;
@@ -163,12 +176,14 @@ async function main(): Promise<void> {
     try {
       parsed = JSON.parse(Deno.readTextFileSync(tsaTrustSource));
     } catch (err) {
-      console.error(`cannot read --tsa-trust ${tsaTrustSource}: ${(err as Error).message}`);
+      console.error(
+        `cannot read --tsa-trust ${terminalSafe(tsaTrustSource, 200)}: ${terminalSafe((err as Error).message, 200)}`,
+      );
       Deno.exit(4);
     }
     const problems = tsaShapeProblems(parsed);
     if (problems.length > 0) {
-      console.error(`malformed tsa-trust document: ${problems[0]}`);
+      console.error(`malformed tsa-trust document: ${terminalSafe(problems[0], 200)}`);
       Deno.exit(4);
     }
     tsaRegistry = parsed as TsaRegistry;
@@ -179,7 +194,8 @@ async function main(): Promise<void> {
   try {
     exp = JSON.parse(Deno.readTextFileSync(file));
   } catch (err) {
-    console.error(`malformed input: ${(err as Error).message}`);
+    // V8 quotes a verbatim excerpt of the offending bytes in this message.
+    console.error(`malformed input: not valid JSON ${terminalSafe(parsePosition(err), 32)}`);
     Deno.exit(4);
   }
   if (exp?.format !== "humarch-export/v1") {
@@ -191,7 +207,7 @@ async function main(): Promise<void> {
   const shapeProblems = exportShapeProblems(exp);
   if (shapeProblems.length > 0) {
     const more = shapeProblems.length > 1 ? ` (+${shapeProblems.length - 1} more)` : "";
-    console.error(`malformed input: ${shapeProblems[0]}${more}`);
+    console.error(`malformed input: ${terminalSafe(shapeProblems[0], 200)}${more}`);
     Deno.exit(4);
   }
 
@@ -222,7 +238,7 @@ async function main(): Promise<void> {
     : null;
 
   if (json) {
-    console.log(JSON.stringify(
+    console.log(jsonSafe(JSON.stringify(
       {
         format: "humarch-verify/v1",
         tenant_id: exp.tenant_id,
@@ -241,7 +257,7 @@ async function main(): Promise<void> {
       },
       null,
       2,
-    ));
+    )));
   } else {
     console.log(renderHuman(exp.tenant_id, chain, anchors, result, properties));
     if (artifactSearch !== null) {

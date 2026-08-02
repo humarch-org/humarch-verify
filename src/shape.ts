@@ -27,7 +27,15 @@ const DATE_YMD = /^\d{4}-\d{2}-\d{2}$/;
 // interpolated raw into the human-readable verdict, where a control byte
 // would let a hostile export drive the verifier's terminal. Genuine values
 // never contain one (SPEC §1 already bans U+0000 in every string).
-const CONTROL_BYTES = /[\u0000-\u001f\u007f]/;
+// Widened by the external audit of 2026-08-02 (finding 2): C0 and DEL are
+// not the whole hostile set. Every Unicode control (Cc: C0, DEL, C1),
+// format (Cf: the bidi overrides and isolates, zero-width joiners, the
+// BOM) and line/paragraph separator (Zl/Zp) is refused - a bidi override
+// inside event_type renders in a terminal as a reversed, verdict-spoofing
+// label. The checked fields are machine values (identifiers, timestamps,
+// statuses); free-text members such as `label` are not checked here and
+// are never rendered by the CLI.
+const CONTROL_BYTES = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -68,21 +76,68 @@ function checkString(problems: string[], path: string, value: unknown): void {
 // non-finite numbers. Iterative walk on purpose — hostile nesting depth must
 // not crash the gate either.
 function checkFinite(problems: string[], path: string, root: unknown): void {
+  // This gate runs BEFORE any other defence, so it needs the guarantees the
+  // search walk has (adversarial review 2026-08-02): a cyclic graph must
+  // terminate, hostile accessors must never be invoked (Object.entries calls
+  // getters), a throwing reflective step must not escape, and the whole walk
+  // is bounded. Only JSON.parse output reaches it through the CLI; the panel
+  // and library callers deserve the same floor.
   const stack: [string, unknown][] = [[path, root]];
+  const seen = new WeakSet<object>();
+  let budget = 2_000_000;
   while (stack.length > 0) {
+    if (budget-- <= 0) return;
     const [p, v] = stack.pop() as [string, unknown];
     if (typeof v === "number") {
       if (!Number.isFinite(v)) {
         problems.push(`${p}: non-finite number (not representable in JSON, RFC 8785)`);
       }
-    } else if (Array.isArray(v)) {
-      v.forEach((x, i) => stack.push([`${p}[${i}]`, x]));
-    } else if (isObject(v)) {
-      for (const [k, x] of Object.entries(v)) stack.push([`${p}.${k}`, x]);
+      continue;
+    }
+    if (typeof v !== "object" || v === null) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    try {
+      for (const key of Reflect.ownKeys(v)) {
+        if (typeof key !== "string") continue;
+        try {
+          const d = Object.getOwnPropertyDescriptor(v, key);
+          if (d !== undefined && d.enumerable === true && "value" in d) {
+            stack.push([Array.isArray(v) ? `${p}[${key}]` : `${p}.${key}`, d.value]);
+          }
+        } catch {
+          // one unreadable property never invalidates the others
+        }
+      }
+    } catch {
+      // an object that refuses enumeration simply has no children here
     }
   }
 }
 
+/**
+ * A provider-supplied DISPLAY string (adversarial review of the F2 remedy,
+ * 2026-08-02). Machine identifiers are held to CONTROL_BYTES; a human name
+ * minted by a third party — the TSA name read from its certificate — is
+ * not one: a soft hyphen or a directional mark inside a genuine QTSP name
+ * would otherwise make a real export unverifiable, a self-inflicted denial
+ * of verification. Controls and line/paragraph separators stay refused (no
+ * legitimate name carries them); everything else is tolerated here and
+ * escaped by the renderer before it reaches a terminal. The class is a
+ * SUBSET of what the token reader strips and of what the registry's own
+ * CHECK constraint refuses, so the writer can never mint a value this gate
+ * rejects — the inversion that would make a whole anchored day
+ * unverifiable for every tenant.
+ */
+const DISPLAY_UNSAFE = /[\p{Cc}]/u;
+
+function checkDisplayString(problems: string[], path: string, value: unknown): void {
+  if (typeof value !== "string" || value.length === 0) {
+    problems.push(`${path}: expected a non-empty string`);
+  } else if (DISPLAY_UNSAFE.test(value)) {
+    problems.push(`${path}: control characters are not allowed`);
+  }
+}
 /**
  * Structural problems of a parsed humarch-export/v1 value; empty array means
  * the export is well-FORMED (it may still be tampered — run the verifier).
@@ -125,10 +180,38 @@ export function exportShapeProblems(value: unknown): string[] {
   if (!Array.isArray(exp.events)) {
     problems.push("events: expected an array");
   } else {
+    // External audit 2026-08-02, finding 1 (layer 2). Within one export a
+    // sequence_number and an event_id are unique by construction (the
+    // registry holds `unique (tenant_id, sequence_number)` and event_id is a
+    // primary key), so a repetition is a form error — and a dangerous one:
+    // verifyChain verifies a POSITIONAL prefix of the sorted events, while a
+    // consumer reading "sequence ≤ verified_through" as "verified" credits a
+    // duplicated, tampered event with integrity it never had. Refusing the
+    // shape here (exit 4) closes that reading at the boundary, independently
+    // of the positional fix in find.ts — the same defence-in-depth pairing
+    // as the duplicate anchor date (W3) below.
+    const seenSequences = new Set<number>();
+    const seenEventIds = new Set<string>();
     exp.events.forEach((ev, i) => {
       if (!isObject(ev)) {
         problems.push(`events[${i}]: expected an object`);
         return;
+      }
+      if (typeof ev.event_id === "string") {
+        if (seenEventIds.has(ev.event_id)) {
+          problems.push(`events[${i}].event_id: duplicate event_id in the export`);
+        } else {
+          seenEventIds.add(ev.event_id);
+        }
+      }
+      if (typeof ev.sequence_number === "number") {
+        if (seenSequences.has(ev.sequence_number)) {
+          problems.push(
+            `events[${i}].sequence_number: duplicate sequence number in the export`,
+          );
+        } else {
+          seenSequences.add(ev.sequence_number);
+        }
       }
       for (
         const f of [
@@ -267,7 +350,7 @@ export function exportShapeProblems(value: unknown): string[] {
                 `anchors[${i}].qualified_timestamp.token_base64: expected a base64 string`,
               );
             }
-            checkString(problems, `anchors[${i}].qualified_timestamp.tsa_name`, qt.tsa_name);
+            checkDisplayString(problems, `anchors[${i}].qualified_timestamp.tsa_name`, qt.tsa_name);
             checkString(problems, `anchors[${i}].qualified_timestamp.policy_oid`, qt.policy_oid);
             checkString(problems, `anchors[${i}].qualified_timestamp.gen_time`, qt.gen_time);
           }
