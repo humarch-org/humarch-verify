@@ -23,7 +23,7 @@ implementation that reproduces those vectors is conformant.
 ## Usage
 
 ```
-humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--ots-level explorer|trustless|convenience] [--json]
+humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--ots-level explorer|trustless|convenience] [--json]
 ```
 
 Exit codes: `0` verified · `2` chain/signatures invalid · `3` anchor/OTS not
@@ -91,6 +91,20 @@ TimeStampToken, e.g.:
 openssl ts -verify -digest <aggregate_hash> -token_in -in token.tst \
   -CAfile <QTSP CA chain>
 ```
+
+**Artifact search (spec 1.4.0).** `--find-artifact <sha256-hex>` lists the
+events whose payload **declares** the given hash as a string value anywhere
+(an `external_refs[].artifact_sha256`, a `message_id_sha256`, a
+`message_sha256`, …). The search is **informative and exit-neutral**: it
+never changes the result or the exit code. Each match states whether it
+falls inside or outside the verified range — a match beyond the point of
+rupture of a tampered export is reported but carries no integrity. A
+declaration is not a binding: the export proves the hash was recorded at
+reception time, not that any artifact matches it — whoever holds the
+artifact recomputes its SHA-256 and compares. Encrypted `payload.personal`
+content is invisible to the search: "not found" does not mean "not there".
+In `--json` output the search appears as the additive top-level key
+`artifact_search`.
 
 ## Trust the binary before you trust the verdict
 

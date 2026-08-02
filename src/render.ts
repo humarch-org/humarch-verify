@@ -12,6 +12,7 @@
 import type { Verdict } from "./verify.ts";
 import type { AnchorVerdict } from "./ots.ts";
 import type { Attribution } from "./issuer.ts";
+import type { ArtifactMatch } from "./find.ts";
 
 export type OverallResult =
   | "verified"
@@ -346,5 +347,45 @@ export function renderHuman(
       "Note: the qualified timestamp attaches the eIDAS art. 42 presumption to the daily aggregate; every event verifiably contained in it inherits that anteriority through deterministic, reproducible recomputation.",
     );
   }
+  return lines.join("\n");
+}
+
+/**
+ * Rendering of the --find-artifact search (D100, SPEC §1.2.5) — a SEPARATE
+ * function on purpose: the verdict rendering above and assess() are the
+ * normative surface and never learn about the search. Wording discipline:
+ * "events DECLARING this hash" — a declaration is recorded evidence of the
+ * declaration itself, never "verified"/"bound"/"proven". Only the
+ * user-supplied hash (already validated 64-hex by the CLI) and fields the
+ * shape gate checked (event_id, event_type, occurred_at) are interpolated:
+ * payload text never reaches the terminal (V2).
+ */
+export function renderArtifactSearch(
+  target: string,
+  matches: ArtifactMatch[],
+  verifiedFrom: number | null,
+  verifiedThrough: number | null,
+): string {
+  const range = verifiedFrom !== null && verifiedThrough !== null
+    ? `${verifiedFrom}-${verifiedThrough}`
+    : "none";
+  const lines: string[] = [];
+  lines.push("");
+  lines.push(`Artifact search — ${target}`);
+  lines.push(
+    `[--] Found: ${matches.length} event${matches.length === 1 ? "" : "s"} declaring this hash (declared references only, SPEC 1.2.5 — nothing binds the artifact to the event).`,
+  );
+  for (const m of matches) {
+    lines.push(
+      `     sequence ${m.sequence_number} · ${m.event_type} · event ${m.event_id} · occurred ${m.occurred_at} — ${
+        m.within_verified_range
+          ? `inside the verified range (${range})`
+          : `OUTSIDE the verified range (${range}): integrity is not established for this event`
+      }`,
+    );
+  }
+  lines.push(
+    'Note: encrypted payload.personal content is invisible to this search — "not found" does not mean "not there".',
+  );
   return lines.join("\n");
 }

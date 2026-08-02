@@ -1,16 +1,18 @@
-// humarch-verify CLI (B10 D62/D65, D82, D98).
+// humarch-verify CLI (B10 D62/D65, D82, D98, D100).
 //
 //   humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>]
-//                  [--tsa-trust <file>]
+//                  [--tsa-trust <file>] [--find-artifact <sha256-hex>]
 //                  [--ots-level explorer|trustless|convenience] [--json]
 //
 // Exit codes (D65 + 2026-07-12 amendment): 0 verified · 2 chain/signatures
 // invalid · 3 anchor/OTS not verified · 4 malformed input · 5 declared
 // partial verification · 6 keys not attributed to a trusted issuer.
-// The qualified-timestamp check (D98) is ADDITIVE: it never changes these.
+// The qualified-timestamp check (D98) and the --find-artifact search (D100)
+// are ADDITIVE: they never change these.
 import { verifyChain } from "./verify.ts";
 import { type OtsLevel, verifyAnchors } from "./ots.ts";
-import { assess, renderHuman } from "./render.ts";
+import { assess, renderArtifactSearch, renderHuman } from "./render.ts";
+import { findArtifact, isArtifactTarget } from "./find.ts";
 import { exportShapeProblems } from "./shape.ts";
 import {
   attributeEvents,
@@ -23,7 +25,7 @@ import { EMBEDDED_TSA, tsaShapeProblems, type TsaRegistry } from "./tst_lite.ts"
 
 function usage(): never {
   console.error(
-    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--ots-level explorer|trustless|convenience] [--json]",
+    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--ots-level explorer|trustless|convenience] [--json]",
   );
   Deno.exit(4);
 }
@@ -34,6 +36,7 @@ async function main(): Promise<void> {
   let pubkey: string | null = null;
   let issuerSource: string | null = null;
   let tsaTrustSource: string | null = null;
+  let findTarget: string | null = null;
   let otsLevel: OtsLevel = "explorer";
   let json = false;
 
@@ -43,6 +46,7 @@ async function main(): Promise<void> {
     else if (a === "--pubkey") pubkey = args.shift() ?? usage();
     else if (a === "--issuer") issuerSource = args.shift() ?? usage();
     else if (a === "--tsa-trust") tsaTrustSource = args.shift() ?? usage();
+    else if (a === "--find-artifact") findTarget = args.shift() ?? usage();
     else if (a === "--ots-level") {
       const v = args.shift() ?? usage();
       if (v !== "explorer" && v !== "trustless" && v !== "convenience") usage();
@@ -55,6 +59,17 @@ async function main(): Promise<void> {
   if (pubkey !== null && issuerSource !== null) {
     console.error("--pubkey and --issuer are mutually exclusive (one trusted set at a time)");
     Deno.exit(4);
+  }
+
+  // --find-artifact takes a SHA-256 as 64 hex chars (validated here, like
+  // --pubkey: the CLI only ever prints this validated string, never payload
+  // text). The search itself runs AFTER assess and never moves the verdict.
+  if (findTarget !== null) {
+    if (!isArtifactTarget(findTarget)) {
+      console.error("--find-artifact must be 64 hex chars (a SHA-256 digest)");
+      Deno.exit(4);
+    }
+    findTarget = findTarget.toLowerCase();
   }
 
   // --pubkey accepts raw hex (either case) or a path to a file containing it.
@@ -190,6 +205,22 @@ async function main(): Promise<void> {
   const anchors = await verifyAnchors(exp, otsLevel, undefined, tsaRegistry);
   const { result, exitCode, properties } = assess(exp, chain, anchors, attribution);
 
+  // Informative search (D100), AFTER assess and with no hand on exitCode:
+  // exit neutrality is the invariant that keeps "one verification routine".
+  const artifactSearch = findTarget !== null
+    ? {
+      target: findTarget,
+      matches: findArtifact(
+        exp,
+        findTarget,
+        chain.verified_from_sequence,
+        chain.verified_through_sequence,
+      ),
+      note:
+        'declared references only; encrypted payload.personal content is invisible to this search — "not found" does not mean "not there"',
+    }
+    : null;
+
   if (json) {
     console.log(JSON.stringify(
       {
@@ -205,12 +236,22 @@ async function main(): Promise<void> {
         properties,
         result,
         ots_level: otsLevel,
+        // Additive top-level key: chain/anchors/properties/result untouched.
+        ...(artifactSearch !== null ? { artifact_search: artifactSearch } : {}),
       },
       null,
       2,
     ));
   } else {
     console.log(renderHuman(exp.tenant_id, chain, anchors, result, properties));
+    if (artifactSearch !== null) {
+      console.log(renderArtifactSearch(
+        artifactSearch.target,
+        artifactSearch.matches,
+        chain.verified_from_sequence,
+        chain.verified_through_sequence,
+      ));
+    }
   }
   Deno.exit(exitCode);
 }
