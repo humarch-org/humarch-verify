@@ -114,6 +114,50 @@ function payloadDeclares(payload: unknown, targetLower: string): boolean {
 }
 
 /**
+ * The export's events sorted by sequence number, with the length of the
+ * positional prefix verifyChain can have verified: the leading run of
+ * strictly increasing sequence numbers, cut at verified_through. Anything at
+ * or past the first repetition (or gap beyond verified_through) is outside,
+ * whatever its number says.
+ *
+ * Fail-safe: any bound that is not a finite number means nothing is known
+ * to be verified (a `null`-only guard let `undefined` or NaN credit the
+ * whole export - adversarial review of this remedy, 2026-08-02).
+ *
+ * Exported: the --trace ancestry walk (D101) positions its nodes against the
+ * SAME sorted list and the SAME prefix — one implementation of the audit-F1
+ * computation, never a re-derivation (user decision 2026-08-03).
+ */
+export function verifiedPositionalPrefix(
+  // deno-lint-ignore no-explicit-any
+  exp: any,
+  verifiedFrom: number | null,
+  verifiedThrough: number | null,
+  // deno-lint-ignore no-explicit-any
+): { events: any[]; prefixLength: number } {
+  // deno-lint-ignore no-explicit-any
+  const events = [...((exp?.events ?? []) as any[])]
+    .sort((a, b) => a.sequence_number - b.sequence_number);
+
+  let prefixLength = 0;
+  if (
+    typeof verifiedFrom === "number" && Number.isFinite(verifiedFrom) &&
+    typeof verifiedThrough === "number" && Number.isFinite(verifiedThrough)
+  ) {
+    let prev: number | null = null;
+    for (const ev of events) {
+      const seq = ev?.sequence_number;
+      if (typeof seq !== "number" || !Number.isFinite(seq)) break;
+      if (prev !== null && seq <= prev) break; // duplicate or non-monotonic
+      if (seq < verifiedFrom || seq > verifiedThrough) break;
+      prev = seq;
+      prefixLength++;
+    }
+  }
+  return { events, prefixLength };
+}
+
+/**
  * Events of the export whose payload declares `target` (64 hex chars) as a
  * string value, in sequence order.
  *
@@ -132,32 +176,7 @@ export function findArtifact(
 ): ArtifactMatch[] {
   const targetLower = target.toLowerCase();
   const matches: ArtifactMatch[] = [];
-  // deno-lint-ignore no-explicit-any
-  const events = [...((exp?.events ?? []) as any[])]
-    .sort((a, b) => a.sequence_number - b.sequence_number);
-
-  // Length of the positional prefix verifyChain can have verified: the
-  // leading run of strictly increasing sequence numbers, cut at
-  // verified_through. Anything at or past the first repetition (or gap
-  // beyond verified_through) is outside, whatever its number says.
-  let prefixLength = 0;
-  // Fail-safe: any bound that is not a finite number means nothing is known
-  // to be verified (a `null`-only guard let `undefined` or NaN credit the
-  // whole export - adversarial review of this remedy, 2026-08-02).
-  if (
-    typeof verifiedFrom === "number" && Number.isFinite(verifiedFrom) &&
-    typeof verifiedThrough === "number" && Number.isFinite(verifiedThrough)
-  ) {
-    let prev: number | null = null;
-    for (const ev of events) {
-      const seq = ev?.sequence_number;
-      if (typeof seq !== "number" || !Number.isFinite(seq)) break;
-      if (prev !== null && seq <= prev) break; // duplicate or non-monotonic
-      if (seq < verifiedFrom || seq > verifiedThrough) break;
-      prev = seq;
-      prefixLength++;
-    }
-  }
+  const { events, prefixLength } = verifiedPositionalPrefix(exp, verifiedFrom, verifiedThrough);
 
   events.forEach((ev, index) => {
     if (!payloadDeclares(ev?.payload, targetLower)) return;

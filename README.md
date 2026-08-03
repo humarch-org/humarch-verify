@@ -23,7 +23,7 @@ implementation that reproduces those vectors is conformant.
 ## Usage
 
 ```
-humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--ots-level explorer|trustless|convenience] [--json]
+humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--trace <event-uuid>]... [--ots-level explorer|trustless|convenience] [--json]
 ```
 
 Exit codes: `0` verified · `2` chain/signatures invalid · `3` anchor/OTS not
@@ -120,6 +120,32 @@ artifact recomputes its SHA-256 and compares. Encrypted `payload.personal`
 content is invisible to the search: "not found" does not mean "not there".
 In `--json` output the search appears as the additive top-level key
 `artifact_search`.
+
+**Ancestry trace.** `--trace <event-uuid>` (repeatable) prints, for a
+contested event, the ordered chain of its **declared** ancestors — event →
+parent → … — walking the `delegation` and `execution` payload conventions
+(spec 1.2.2 / 1.2.6). The walk is **informative and exit-neutral**: it never
+changes the result or the exit code. Its output opens with the semantics it
+is limited to: *declared ancestry — what the source declared at reception
+time, not proven causation; times are reception times.* Hop granularity is
+always stated: a hop is **exact** when the child declared the parent's
+`event_id` (the `202` echo), and **run-level** when it declared only the
+parent's run id — which resolves to the *set* of export events declaring
+that `execution.ref`, never to one event. An event that declares no
+delegation of its own continues through its **own declared run** (a
+membership hop, worded as such: the next hop belongs to the run's events).
+Every link states whether it falls inside the verified range; an unresolved
+parent is reported as such and is **not tampering** (the ancestor may lie
+outside the exported range). Declared cycles are reported and stopped; the
+walk is capped at 64 hops; run ids from the payload are escaped and clipped
+before rendering. Encrypted `payload.personal` content is invisible to
+these arcs: an absent arc does not mean "no ancestor". In `--json` output
+the walk appears as the additive top-level key `ancestry`.
+
+*A note on coverage*: how often real-world exports carry the run
+identifiers this walk needs is an empirical question we have deliberately
+not scored against our own fixtures (it would be circular); the measure is
+deferred to the first real corpus.
 
 ## Trust the binary before you trust the verdict
 

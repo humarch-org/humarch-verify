@@ -1,18 +1,27 @@
-// humarch-verify CLI (B10 D62/D65, D82, D98, D100).
+// humarch-verify CLI (B10 D62/D65, D82, D98, D100, D101).
 //
 //   humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>]
 //                  [--tsa-trust <file>] [--find-artifact <sha256-hex>]
+//                  [--trace <event-uuid>]...
 //                  [--ots-level explorer|trustless|convenience] [--json]
 //
 // Exit codes (D65 + 2026-07-12 amendment): 0 verified · 2 chain/signatures
 // invalid · 3 anchor/OTS not verified · 4 malformed input · 5 declared
 // partial verification · 6 keys not attributed to a trusted issuer.
-// The qualified-timestamp check (D98) and the --find-artifact search (D100)
-// are ADDITIVE: they never change these.
+// The qualified-timestamp check (D98), the --find-artifact search (D100)
+// and the --trace ancestry walk (D101) are ADDITIVE: they never change these.
 import { verifyChain } from "./verify.ts";
 import { type OtsLevel, verifyAnchors } from "./ots.ts";
-import { assess, jsonSafe, renderArtifactSearch, renderHuman, terminalSafe } from "./render.ts";
+import {
+  assess,
+  jsonSafe,
+  renderAncestry,
+  renderArtifactSearch,
+  renderHuman,
+  terminalSafe,
+} from "./render.ts";
 import { findArtifact, isArtifactTarget } from "./find.ts";
+import { ANCESTRY_NOTE, ANCESTRY_SEMANTICS, isTraceTarget, traceAncestry } from "./trace.ts";
 import { exportShapeProblems } from "./shape.ts";
 import {
   attributeEvents,
@@ -21,11 +30,11 @@ import {
   issuerShapeProblems,
   trustedKeyBytes,
 } from "./issuer.ts";
-import { EMBEDDED_TSA, tsaShapeProblems, type TsaRegistry } from "./tst_lite.ts";
+import { EMBEDDED_TSA, type TsaRegistry, tsaShapeProblems } from "./tst_lite.ts";
 
 function usage(): never {
   console.error(
-    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--ots-level explorer|trustless|convenience] [--json]",
+    "usage: humarch-verify <export.json> [--issuer <file|url>] [--pubkey <hex|file>] [--tsa-trust <file>] [--find-artifact <sha256-hex>] [--trace <event-uuid>]... [--ots-level explorer|trustless|convenience] [--json]",
   );
   Deno.exit(4);
 }
@@ -48,6 +57,7 @@ async function main(): Promise<void> {
   let issuerSource: string | null = null;
   let tsaTrustSource: string | null = null;
   let findTarget: string | null = null;
+  let traceTargets: string[] = [];
   let otsLevel: OtsLevel = "explorer";
   let json = false;
 
@@ -58,6 +68,7 @@ async function main(): Promise<void> {
     else if (a === "--issuer") issuerSource = args.shift() ?? usage();
     else if (a === "--tsa-trust") tsaTrustSource = args.shift() ?? usage();
     else if (a === "--find-artifact") findTarget = args.shift() ?? usage();
+    else if (a === "--trace") traceTargets.push(args.shift() ?? usage());
     else if (a === "--ots-level") {
       const v = args.shift() ?? usage();
       if (v !== "explorer" && v !== "trustless" && v !== "convenience") usage();
@@ -82,6 +93,19 @@ async function main(): Promise<void> {
     }
     findTarget = findTarget.toLowerCase();
   }
+
+  // --trace takes the event_id of a contested event, validated as a UUID
+  // here (like --pubkey: the CLI only ever prints validated or sanitized
+  // strings). Repeatable — several contested events share one walk with
+  // dedup across their chains. The walk itself runs AFTER assess and never
+  // moves the verdict (D101).
+  for (const t of traceTargets) {
+    if (!isTraceTarget(t)) {
+      console.error("--trace must be a UUID (the event_id of the contested event)");
+      Deno.exit(4);
+    }
+  }
+  traceTargets = [...new Set(traceTargets.map((t) => t.toLowerCase()))];
 
   // --pubkey accepts raw hex (either case) or a path to a file containing it.
   if (pubkey !== null) {
@@ -130,12 +154,16 @@ async function main(): Promise<void> {
         });
         if (res.status >= 300 && res.status < 400) {
           console.error(
-            `--issuer ${terminalSafe(issuerSource, 200)} redirects (HTTP ${res.status}): refused — a redirect can downgrade the TLS channel; pass the final https:// URL`,
+            `--issuer ${
+              terminalSafe(issuerSource, 200)
+            } redirects (HTTP ${res.status}): refused — a redirect can downgrade the TLS channel; pass the final https:// URL`,
           );
           Deno.exit(4);
         }
         if (!res.ok) {
-          console.error(`cannot read --issuer ${terminalSafe(issuerSource, 200)}: HTTP ${res.status}`);
+          console.error(
+            `cannot read --issuer ${terminalSafe(issuerSource, 200)}: HTTP ${res.status}`,
+          );
           Deno.exit(4);
         }
         text = await res.text();
@@ -144,7 +172,9 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       console.error(
-        `cannot read --issuer ${terminalSafe(issuerSource, 200)}: ${terminalSafe((err as Error).message, 200)}`,
+        `cannot read --issuer ${terminalSafe(issuerSource, 200)}: ${
+          terminalSafe((err as Error).message, 200)
+        }`,
       );
       Deno.exit(4);
     }
@@ -152,7 +182,9 @@ async function main(): Promise<void> {
     try {
       parsed = JSON.parse(text);
     } catch (err) {
-      console.error(`malformed issuer document: not valid JSON ${terminalSafe(parsePosition(err), 32)}`);
+      console.error(
+        `malformed issuer document: not valid JSON ${terminalSafe(parsePosition(err), 32)}`,
+      );
       Deno.exit(4);
     }
     const problems = issuerShapeProblems(parsed);
@@ -177,7 +209,9 @@ async function main(): Promise<void> {
       parsed = JSON.parse(Deno.readTextFileSync(tsaTrustSource));
     } catch (err) {
       console.error(
-        `cannot read --tsa-trust ${terminalSafe(tsaTrustSource, 200)}: ${terminalSafe((err as Error).message, 200)}`,
+        `cannot read --tsa-trust ${terminalSafe(tsaTrustSource, 200)}: ${
+          terminalSafe((err as Error).message, 200)
+        }`,
       );
       Deno.exit(4);
     }
@@ -237,6 +271,22 @@ async function main(): Promise<void> {
     }
     : null;
 
+  // Informative ancestry walk (D101), AFTER assess and with no hand on
+  // exitCode — same neutrality contract as the artifact search above. Print
+  // order is fixed: verdict, artifact search, ancestry.
+  const ancestry = traceTargets.length > 0
+    ? {
+      semantics: ANCESTRY_SEMANTICS,
+      traces: traceAncestry(
+        exp,
+        traceTargets,
+        chain.verified_from_sequence,
+        chain.verified_through_sequence,
+      ),
+      note: ANCESTRY_NOTE,
+    }
+    : null;
+
   if (json) {
     console.log(jsonSafe(JSON.stringify(
       {
@@ -252,8 +302,9 @@ async function main(): Promise<void> {
         properties,
         result,
         ots_level: otsLevel,
-        // Additive top-level key: chain/anchors/properties/result untouched.
+        // Additive top-level keys: chain/anchors/properties/result untouched.
         ...(artifactSearch !== null ? { artifact_search: artifactSearch } : {}),
+        ...(ancestry !== null ? { ancestry } : {}),
       },
       null,
       2,
@@ -264,6 +315,13 @@ async function main(): Promise<void> {
       console.log(renderArtifactSearch(
         artifactSearch.target,
         artifactSearch.matches,
+        chain.verified_from_sequence,
+        chain.verified_through_sequence,
+      ));
+    }
+    if (ancestry !== null) {
+      console.log(renderAncestry(
+        ancestry.traces,
         chain.verified_from_sequence,
         chain.verified_through_sequence,
       ));

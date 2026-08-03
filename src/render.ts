@@ -13,6 +13,13 @@ import type { Verdict } from "./verify.ts";
 import type { AnchorVerdict } from "./ots.ts";
 import type { Attribution } from "./issuer.ts";
 import type { ArtifactMatch } from "./find.ts";
+import {
+  ANCESTRY_NOTE,
+  ANCESTRY_SEMANTICS,
+  TRACE_DEPTH_CAP,
+  type TraceEventRef,
+  type TraceResult,
+} from "./trace.ts";
 
 export type OverallResult =
   | "verified"
@@ -208,9 +215,9 @@ export function renderHuman(
       : 0;
   lines.push("Humarch — Registry verification");
   lines.push(
-    `Tenant ${terminalSafe([...String(tenantId)].slice(0, 8).join(""), 32)}…  ·  sequences ${chain.verified_from_sequence ?? "?"}–${
-      chain.verified_through_sequence ?? "?"
-    } (${eventCount} events)`,
+    `Tenant ${terminalSafe([...String(tenantId)].slice(0, 8).join(""), 32)}…  ·  sequences ${
+      chain.verified_from_sequence ?? "?"
+    }–${chain.verified_through_sequence ?? "?"} (${eventCount} events)`,
   );
   lines.push("");
 
@@ -245,7 +252,9 @@ export function renderHuman(
       );
     } else if (a.time_consistent === false) {
       lines.push(
-        `[ERROR] Anchor of ${a.anchor_date} — the Bitcoin attestation is real but does not prove the declared day: ${displaySafe(a.note)}.`,
+        `[ERROR] Anchor of ${a.anchor_date} — the Bitcoin attestation is real but does not prove the declared day: ${
+          displaySafe(a.note)
+        }.`,
       );
     } else if (a.bitcoin_verified === true) {
       const block = anchorBlockForDisplay(a);
@@ -282,7 +291,9 @@ export function renderHuman(
           // day's window) stays genuine but must not read [OK] for the
           // declared day (review H1): the note carries the limitation.
           lines.push(
-            `[${qt.gen_time_consistent === false ? "WARN" : "OK"}] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`,
+            `[${
+              qt.gen_time_consistent === false ? "WARN" : "OK"
+            }] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`,
           );
           break;
         case "untrusted":
@@ -376,9 +387,7 @@ export function renderHuman(
  * MUST reuse this, never re-derive it.
  */
 export function terminalSafe(value: string, maxLength = 128): string {
-  const clipped = value.length > maxLength
-    ? value.slice(0, maxLength) + "..."
-    : value;
+  const clipped = value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
   let out = "";
   for (const ch of clipped) {
     const cp = ch.codePointAt(0) as number;
@@ -406,8 +415,7 @@ export function displaySafe(value: string, maxLength = 200): string {
   const clipped = value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
   return clipped.replace(
     /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
-    (ch) =>
-      "<U+" + (ch.codePointAt(0) as number).toString(16).toUpperCase().padStart(4, "0") + ">",
+    (ch) => "<U+" + (ch.codePointAt(0) as number).toString(16).toUpperCase().padStart(4, "0") + ">",
   );
 }
 /**
@@ -459,11 +467,15 @@ export function renderArtifactSearch(
   lines.push("");
   lines.push(`Artifact search — ${terminalSafe(target, 64)}`);
   lines.push(
-    `[--] Found: ${matches.length} event${matches.length === 1 ? "" : "s"} declaring this hash (declared references only, SPEC 1.2.5 — nothing binds the artifact to the event).`,
+    `[--] Found: ${matches.length} event${
+      matches.length === 1 ? "" : "s"
+    } declaring this hash (declared references only, SPEC 1.2.5 — nothing binds the artifact to the event).`,
   );
   for (const m of matches) {
     lines.push(
-      `     sequence ${Number(m.sequence_number)} · ${terminalSafe(m.event_type, 48)} · event ${terminalSafe(m.event_id, 48)} · occurred ${terminalSafe(m.occurred_at, 32)} — ${
+      `     sequence ${Number(m.sequence_number)} · ${terminalSafe(m.event_type, 48)} · event ${
+        terminalSafe(m.event_id, 48)
+      } · occurred ${terminalSafe(m.occurred_at, 32)} — ${
         m.within_verified_range
           ? `inside the verified range (${range})`
           : `OUTSIDE the verified range (${range}): integrity is not established for this event`
@@ -473,5 +485,172 @@ export function renderArtifactSearch(
   lines.push(
     'Note: encrypted payload.personal content is invisible to this search — "not found" does not mean "not there".',
   );
+  return lines.join("\n");
+}
+
+/**
+ * Rendering of the --trace declared-ancestry walk (D101) — a SEPARATE
+ * function on purpose: the verdict rendering above and assess() are the
+ * normative surface and never learn about the trace. Wording discipline: the
+ * section opens with the pinned semantics sentence, hop granularity is
+ * always named (exact event vs run-level), and the forbidden formulations
+ * ("verified ancestry", causation talk) never render — pinned by test.
+ *
+ * Every interpolated value passes through terminalSafe here EVEN THOUGH
+ * trace.ts already sanitizes refs: a public renderer must not rest on a
+ * precondition its own signature does not express (the F2 remedy lesson).
+ * terminalSafe is idempotent on already-escaped values, so the double
+ * application is harmless for genuine input and load-bearing for a direct
+ * caller's hostile one.
+ */
+export function renderAncestry(
+  traces: TraceResult[],
+  verifiedFrom: number | null,
+  verifiedThrough: number | null,
+): string {
+  const range = verifiedFrom !== null && verifiedThrough !== null
+    ? `${Number(verifiedFrom)}-${Number(verifiedThrough)}`
+    : "none";
+  const pos = (within: boolean): string =>
+    within
+      ? `inside the verified range (${range})`
+      : `OUTSIDE the verified range (${range}): integrity is not established for this event`;
+  const ref = (v: string | null): string => terminalSafe(v ?? "?", 72);
+  const evLine = (e: TraceEventRef): string =>
+    `event ${terminalSafe(e.event_id, 48)} · seq ${
+      e.sequence_number === null ? "?" : Number(e.sequence_number)
+    } · ${terminalSafe(e.event_type, 48)} · received ${terminalSafe(e.received_at, 32)} — ${
+      pos(e.within_verified_range)
+    }`;
+
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("Ancestry trace");
+  lines.push(ANCESTRY_SEMANTICS);
+  for (const t of traces) {
+    lines.push("");
+    if (!t.found_in_export) {
+      lines.push(
+        `[--] Event ${
+          terminalSafe(t.target, 48)
+        } — not present in this export: no ancestry can be assembled from this file (the event may lie outside the exported range).`,
+      );
+      continue;
+    }
+    const hops = Number(t.chain.length) - 1;
+    lines.push(
+      `[--] Event ${terminalSafe(t.target, 48)} — declared chain, ${hops} hop${
+        hops === 1 ? "" : "s"
+      }:`,
+    );
+    for (const node of t.chain) {
+      if (node.kind === "event") {
+        const head = node.hop === "start" ? "     " : "     ^ declared parent (exact event): ";
+        if (node.repeated) {
+          lines.push(
+            `${head}event ${terminalSafe(node.event.event_id, 48)} — already shown above.`,
+          );
+          continue;
+        }
+        lines.push(head + evLine(node.event));
+        const facts: string[] = [];
+        if (node.execution_ref !== null) {
+          facts.push(`declares execution run '${ref(node.execution_ref)}'`);
+        }
+        if (node.declared_root_ref !== null) {
+          facts.push(`declared root run '${ref(node.declared_root_ref)}'`);
+        }
+        if (node.declared_depth !== null) {
+          facts.push(`declared depth ${Number(node.declared_depth)}`);
+        }
+        if (facts.length > 0) lines.push(`       ${facts.join(" · ")}`);
+      } else if (node.kind === "run") {
+        // A membership hop is the traced event's OWN declared run; a run
+        // hop is a declared PARENT run. Different words on purpose (D101):
+        // the next declaration belongs to the run's events, and a run of N
+        // events never pretends to be one event.
+        const label = node.hop === "membership"
+          ? `member of declared run '${ref(node.ref)}'`
+          : `declared parent (run-level): run '${ref(node.ref)}'`;
+        if (node.repeated) {
+          lines.push(`     ^ ${label} — already shown above.`);
+          continue;
+        }
+        const total = Number(node.events_total);
+        lines.push(
+          `     ^ ${label} — ${total} event${
+            total === 1 ? "" : "s"
+          } in this export declare this run (${
+            Number(node.events_inside_verified_range)
+          } inside the verified range (${range})):`,
+        );
+        for (const m of node.members.slice(0, 5)) lines.push(`         ${evLine(m)}`);
+        if (total > 5) {
+          lines.push(
+            `         … and ${total - 5} more event${total - 5 === 1 ? "" : "s"} of this run`,
+          );
+        }
+      } else {
+        if (node.hop === "exact") {
+          const alsoRun = node.declared_ref !== null
+            ? ` (declared parent run '${ref(node.declared_ref)}')`
+            : "";
+          lines.push(
+            `     ^ declared parent (exact event): event ${
+              ref(node.declared_event_id)
+            } — not present in this export${alsoRun}; the ancestor may lie outside the exported range — a declared reference that does not resolve is not tampering.`,
+          );
+        } else {
+          lines.push(
+            `     ^ declared parent (run-level): run '${
+              ref(node.declared_ref)
+            }' — no events in this export declare this run; the ancestor may lie outside the exported range — a declared reference that does not resolve is not tampering.`,
+          );
+        }
+      }
+    }
+    switch (t.end) {
+      case "root_of_declared_chain":
+        lines.push("     end of the declared chain — no further ancestry declared.");
+        break;
+      case "parent_not_in_export":
+        break; // the missing-link line above is the end statement
+      case "cycle_declared":
+        lines.push(
+          "     cycle — the declarations close a loop back to a link already shown in this chain; the walk stops here.",
+        );
+        break;
+      case "continues_above":
+        lines.push("     the declared chain continues as already shown above.");
+        break;
+      case "depth_cap_reached":
+        lines.push(
+          `     depth cap (${TRACE_DEPTH_CAP} hops) reached — deeper declared ancestry is not shown.`,
+        );
+        break;
+      case "ambiguous_parents": {
+        const last = t.chain[t.chain.length - 1];
+        const isRun = last !== undefined && last.kind === "run";
+        const list = isRun && last.distinct_parent_refs.length > 0
+          ? ` (e.g. ${last.distinct_parent_refs.map((r) => `'${ref(r)}'`).join(", ")})`
+          : "";
+        lines.push(
+          `     the events of this run declare ${
+            isRun ? Number(last.distinct_parent_count) : "several"
+          } different parents${list} — the declared chain diverges here; the walk stops.`,
+        );
+        break;
+      }
+      case "malformed_declaration":
+        lines.push(
+          "     a delegation is declared but carries no usable parent identifier — the declared chain stops here.",
+        );
+        break;
+      case "target_not_found":
+        break; // rendered above
+    }
+  }
+  lines.push("");
+  lines.push(`Note: ${ANCESTRY_NOTE}.`);
   return lines.join("\n");
 }
