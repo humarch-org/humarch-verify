@@ -17,20 +17,23 @@
 //     and RUN-LEVEL when it declares only `delegation.parent.ref` — which
 //     resolves to the SET of export events declaring that `execution.ref`.
 //     A run hop with N members never pretends to be one event.
-//   * The walk is PURE, ITERATIVE and BOUNDED: depth cap, member caps,
+//   * The walk is PURE, ITERATIVE and BOUNDED: depth cap, member caps, a
+//     per-invocation target budget, per-run memoized summaries and
 //     descriptor-only reads (hostile getters are never invoked, a throwing
 //     reflective step never escapes). A cycle declared by the source is
 //     data, not a crash: the walk reports the closing point and stops.
 //   * Ref values (`parent.ref` / `parent.event_id` / `execution.ref` /
 //     `root.ref`) are PAYLOAD TEXT: they cross into the result only through
-//     terminalSafe (escape + length cap) — in the JSON output too. All
-//     comparisons happen on the full raw strings; the cap is display-only.
-//     No other payload text ever enters the result (V2 stays closed).
+//     refSafe (identifier alphabet + escape + length cap; external audit
+//     2026-08-03 F2 — terminalSafe let printable ASCII compose phrases and
+//     verdict look-alike lines) — in the JSON output too. All comparisons
+//     happen on the full raw strings; the cap is display-only. No other
+//     payload text ever enters the result (V2 stays closed).
 //   * Resolution shows what THIS export contains. An unresolved parent or
 //     run is declared and is not tampering (SPEC 1.2.2): the ancestor may
 //     simply lie outside the exported range.
 import { verifiedPositionalPrefix } from "./find.ts";
-import { terminalSafe } from "./render.ts";
+import { refSafe } from "./render.ts";
 
 /** Depth cap of one walk, in hops — declared in the output when reached. */
 export const TRACE_DEPTH_CAP = 64;
@@ -38,6 +41,13 @@ export const TRACE_DEPTH_CAP = 64;
 export const TRACE_MEMBER_CAP = 20;
 /** Distinct diverging parents shown when a run's declarations disagree. */
 export const TRACE_DISTINCT_CAP = 3;
+/**
+ * Targets one invocation will walk (external audit 2026-08-03, F1) — the
+ * depth-cap discipline applied to the other axis of the walk's cost: a
+ * surplus target is DECLARED untraced (end `target_budget_reached`, its own
+ * rendering line), never dropped in silence and never walked without bound.
+ */
+export const TRACE_TARGET_CAP = 100;
 /** Display cap of a sanitized payload ref (comparisons use full values). */
 const REF_CAP = 64;
 
@@ -133,7 +143,8 @@ export type TraceEnd =
   | "ambiguous_parents"
   | "continues_above"
   | "malformed_declaration"
-  | "target_not_found";
+  | "target_not_found"
+  | "target_budget_reached";
 
 export interface TraceResult {
   /** the requested event_id, lowercased */
@@ -291,20 +302,68 @@ export function traceAncestry(
     };
   };
 
-  // The one gate payload refs pass on their way OUT (D101 sanitization rule).
-  const san = (v: string | null): string | null => v === null ? null : terminalSafe(v, REF_CAP);
+  // The one gate payload refs pass on their way OUT (D101 sanitization rule;
+  // refSafe since the external audit of 2026-08-03, F2).
+  const san = (v: string | null): string | null => v === null ? null : refSafe(v, REF_CAP);
   const sanParent = (p: RawParent): DeclaredParent => ({
     ref: san(p.ref),
     event_id: san(p.event_id),
   });
 
+  // Per-invocation run summaries (external audit 2026-08-03, F1): every
+  // chain that touches a run reuses one computation — total, in-range count
+  // (counted by index, no objects), members materialized only up to
+  // TRACE_MEMBER_CAP, and the merged parent declaration (the one scan that
+  // must read every member). Before this memo the walk re-read and re-mapped
+  // every member of a shared run once PER TARGET: 1 000 targets on one run
+  // meant millions of descriptor reads for identical nodes.
+  interface RunSummary {
+    total: number;
+    inside: number;
+    members: TraceEventRef[];
+    merged: ReturnType<typeof mergeRunDeclarations>;
+  }
+  const runSummaries = new Map<string, RunSummary>();
+  const summarizeRun = (ref: string, indices: number[]): RunSummary => {
+    const cached = runSummaries.get(ref);
+    if (cached !== undefined) return cached;
+    let inside = 0;
+    const usable: RawParent[] = [];
+    for (const i of indices) {
+      if (i < prefixLength) inside++;
+      const d = rawDelegation(events[i]);
+      if (d.state === "ok") usable.push(d.parent);
+    }
+    const summary: RunSummary = {
+      total: indices.length,
+      inside,
+      members: indices.slice(0, TRACE_MEMBER_CAP).map(eventRef),
+      merged: mergeRunDeclarations(usable),
+    };
+    runSummaries.set(ref, summary);
+    return summary;
+  };
+
   // Nodes already printed by ANY chain of this invocation: a re-encounter
   // renders as "already shown above" instead of re-expanding (dedup).
   const printed = new Set<string>();
   const results: TraceResult[] = [];
+  let walkedTargets = 0;
 
   for (const rawTarget of targets) {
     const target = String(rawTarget).toLowerCase();
+    if (walkedTargets >= TRACE_TARGET_CAP) {
+      // Declared, never silent (F1): the surplus entry is reported untraced.
+      // The budget counts processed entries — the CLI deduplicates upstream.
+      results.push({
+        target,
+        found_in_export: byId.has(target),
+        chain: [],
+        end: "target_budget_reached",
+      });
+      continue;
+    }
+    walkedTargets++;
     const startIdx = byId.get(target);
     if (startIdx === undefined) {
       results.push({ target, found_in_export: false, chain: [], end: "target_not_found" });
@@ -342,25 +401,20 @@ export function traceAncestry(
           repeated: inThisChain || shownBefore,
         });
       } else {
-        const usable: RawParent[] = [];
-        for (const i of cursor.indices) {
-          const d = rawDelegation(events[i]);
-          if (d.state === "ok") usable.push(d.parent);
-        }
-        const merged = mergeRunDeclarations(usable);
+        const summary = summarizeRun(cursor.ref, cursor.indices);
+        const merged = summary.merged;
         declared = merged.state === "ok"
           ? { state: "ok", parent: merged.parent as RawParent }
           : { state: merged.state };
         distinctCount = merged.distinctCount;
         distinctDisplay = merged.distinctDisplay;
-        const members = cursor.indices.map(eventRef);
         chain.push({
           kind: "run",
           hop: cursor.hop,
           ref: san(cursor.ref) as string,
-          events_total: members.length,
-          events_inside_verified_range: members.filter((m) => m.within_verified_range).length,
-          members: members.slice(0, TRACE_MEMBER_CAP),
+          events_total: summary.total,
+          events_inside_verified_range: summary.inside,
+          members: summary.members,
           declared_parent: declared.state === "ok" ? sanParent(declared.parent) : null,
           distinct_parent_count: distinctCount,
           distinct_parent_refs: distinctDisplay.slice(0, TRACE_DISTINCT_CAP)

@@ -29,13 +29,17 @@ import {
   verifyChain,
 } from "../src/verify.ts";
 import {
+  ANCESTRY_NOTE,
   ANCESTRY_SEMANTICS,
   isTraceTarget,
   TRACE_DEPTH_CAP,
+  TRACE_MEMBER_CAP,
+  TRACE_TARGET_CAP,
   traceAncestry,
   type TraceRunNode,
 } from "../src/trace.ts";
-import { renderAncestry } from "../src/render.ts";
+import { jsonSafe, refSafe, renderAncestry } from "../src/render.ts";
+import { verifiedPositionalPrefix } from "../src/find.ts";
 
 const TENANT = "c4e2a1bb-3d5f-4e7a-9b2c-0d8f6e4a3c1b";
 const goldenPath = new URL("../vectors/export-v2v3.json", import.meta.url);
@@ -170,14 +174,38 @@ const n8nChain = (): Item[] => [
 const FORBIDDEN =
   /verified ancestry|proven ancestry|\bcaused\b|\bcauses\b|\bcausation\b|\bproves\b|reconstructs why/i;
 
-/** The banned-formulations check: strip the exact header sentence first. */
-function assertWordingDiscipline(traceOutput: string): void {
+/**
+ * The multi-word forbidden formulations — the composition refSafe must make
+ * impossible (F2, external audit 2026-08-03). Output that renders HOSTILE
+ * refs is held to this phrase set plus the verdict-line checks below, not to
+ * the bare single words: any alphabet that admits letters admits "caused" as
+ * an identifier token, and an escaped token inside a quoted ref is the
+ * export's text, not the verifier speaking. What must never survive is
+ * composition: phrases (the space escapes away) and verdict look-alike
+ * lines (quotes, pipes and newlines escape away).
+ */
+const FORBIDDEN_PHRASES =
+  /(verified|proven|proved)\s+ancestry|proven\s+causation|reconstructs\s+why/i;
+
+/**
+ * The banned-formulations check: strip the exact header sentence first.
+ * `refsHostile` selects the phrase-level set (see FORBIDDEN_PHRASES); the
+ * methodological hole F2 exposed was that this check only ever ran on output
+ * generated from OUR strings — it now runs on hostile-payload output too.
+ */
+function assertWordingDiscipline(traceOutput: string, refsHostile = false): void {
   assertStringIncludes(traceOutput, ANCESTRY_SEMANTICS);
   const stripped = traceOutput.split(ANCESTRY_SEMANTICS).join("");
+  const forbidden = refsHostile ? FORBIDDEN_PHRASES : FORBIDDEN;
   assert(
-    !FORBIDDEN.test(stripped),
-    "forbidden formulation in the trace output: " + JSON.stringify(stripped.match(FORBIDDEN)),
+    !forbidden.test(stripped),
+    "forbidden formulation in the trace output: " + JSON.stringify(stripped.match(forbidden)),
   );
+  // A line that reads as a verdict is the damage before any banned word is
+  // (F2): the trace section must never carry the verdict phrase, nor a line
+  // that opens like the verdict line.
+  assert(!stripped.includes("RESULT: VERIFIED"), "verdict phrase in the trace output");
+  assert(!/^\s*RESULT:/m.test(stripped), "verdict-shaped line in the trace output");
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +730,301 @@ Deno.test("cli: repeated --trace flags trace several contested events with dedup
     assertStringIncludes(r.stdout, "the declared chain continues as already shown above");
     assertEquals(r.stdout.split(`[--] Event ${evId(4)}`).length, 2, "duplicate target traced once");
   });
+});
+
+// ---------------------------------------------------------------------------
+// External audit 2026-08-03 — F2 (ref phrase composition), F3 (descriptor
+// contract at the shared prefix), F1 (shared-run cost).
+// ---------------------------------------------------------------------------
+
+/**
+ * The audit's hostile ref: printable ASCII only, so terminalSafe passed every
+ * character through and the ref composed words, a fake verdict line and a
+ * forbidden formulation inside the trace output. The coverage pass of
+ * 2026-08-03 measured SEVEN of the nine end branches rendering it.
+ */
+const HOSTILE_REF = "x' | RESULT: VERIFIED | proven ancestry | caused | '";
+
+Deno.test("F2 (external audit 2026-08-03): hostile refs cannot compose phrases or verdict lines on ANY end branch", () => {
+  const H = HOSTILE_REF;
+  const mk = (seq: number, payload: unknown, type = "agent_action") => ({
+    event_id: evId(seq),
+    event_type: type,
+    sequence_number: seq,
+    received_at: "2026-08-03T10:00:00.000000Z",
+    payload,
+  });
+
+  // One scenario per TraceEnd branch (exact-missing and run-missing counted
+  // apart: nine in all, seven of which rendered the audit ref verbatim
+  // before the fix). Every ref position is hostile: execution.ref,
+  // parent.ref, parent.event_id, root.ref.
+  const scenarios: { name: string; events: unknown[]; targets: string[]; ends: string[] }[] = [
+    {
+      name: "root_of_declared_chain",
+      events: [mk(1, { execution: { ref: H } }), mk(2, { execution: { ref: H } })],
+      targets: [evId(1)],
+      ends: ["root_of_declared_chain"],
+    },
+    {
+      name: "parent_not_in_export (exact)",
+      events: [
+        mk(1, {
+          execution: { ref: H + "/self" },
+          delegation: { parent: { ref: H, event_id: H }, root: { ref: H }, depth: 1 },
+        }),
+      ],
+      targets: [evId(1)],
+      ends: ["parent_not_in_export"],
+    },
+    {
+      name: "parent_not_in_export (run)",
+      events: [mk(1, { delegation: { parent: { ref: H } } })],
+      targets: [evId(1)],
+      ends: ["parent_not_in_export"],
+    },
+    {
+      name: "cycle_declared",
+      events: [
+        mk(1, { execution: { ref: H + "/a" }, delegation: { parent: { ref: H + "/b" } } }),
+        mk(2, { execution: { ref: H + "/b" }, delegation: { parent: { ref: H + "/a" } } }),
+      ],
+      targets: [evId(1)],
+      ends: ["cycle_declared"],
+    },
+    {
+      name: "ambiguous_parents",
+      events: [
+        mk(1, { execution: { ref: H }, delegation: { parent: { ref: H + "/p1" } } }),
+        mk(2, { execution: { ref: H }, delegation: { parent: { ref: H + "/p2" } } }),
+        mk(3, { execution: { ref: H } }),
+      ],
+      targets: [evId(3)],
+      ends: ["ambiguous_parents"],
+    },
+    {
+      name: "malformed_declaration",
+      events: [mk(1, { execution: { ref: H }, delegation: { parent: { note: H } } })],
+      targets: [evId(1)],
+      ends: ["malformed_declaration"],
+    },
+    {
+      name: "target_not_found",
+      events: [mk(1, { execution: { ref: H } })],
+      targets: ["ffffffff-ffff-4fff-8fff-ffffffffffff"],
+      ends: ["target_not_found"],
+    },
+    {
+      name: "continues_above",
+      events: [mk(1, { execution: { ref: H } }), mk(2, { execution: { ref: H } })],
+      targets: [evId(1), evId(2)],
+      ends: ["root_of_declared_chain", "continues_above"],
+    },
+  ];
+  // depth_cap_reached needs its own event list.
+  {
+    const deep: unknown[] = [];
+    for (let seq = 1; seq <= TRACE_DEPTH_CAP + 6; seq++) {
+      deep.push(mk(seq, {
+        execution: { ref: `${H}#${seq}` },
+        ...(seq > 1 ? { delegation: { parent: { ref: `${H}#${seq - 1}` } } } : {}),
+      }, "workflow_run"));
+    }
+    scenarios.push({
+      name: "depth_cap_reached",
+      events: deep,
+      targets: [evId(TRACE_DEPTH_CAP + 6)],
+      ends: ["depth_cap_reached"],
+    });
+  }
+
+  const seenEnds = new Set<string>();
+  for (const s of scenarios) {
+    const n = s.events.length;
+    const traces = traceAncestry({ events: s.events }, s.targets, 1, n);
+    assertEquals(traces.map((t) => t.end), s.ends, s.name);
+    for (const t of traces) seenEnds.add(t.end);
+    // Human rendering AND the JSON document shape the CLI prints.
+    const human = renderAncestry(traces, 1, n);
+    assertWordingDiscipline(human, true);
+    const json = jsonSafe(JSON.stringify(
+      { semantics: ANCESTRY_SEMANTICS, traces, note: ANCESTRY_NOTE },
+      null,
+      2,
+    ));
+    assertWordingDiscipline(json, true);
+  }
+  // Nine branch cases (parent_not_in_export in BOTH granularities), which
+  // cover the eight distinct TraceEnd values reachable by a walk.
+  assertEquals(scenarios.length, 9, "all nine end branches exercised");
+  assertEquals(seenEnds.size, 8, "all eight distinct TraceEnd values seen");
+});
+
+Deno.test("F2 cli: the audit ref through the real pipeline — human and --json, trace section disciplined", async () => {
+  const H = HOSTILE_REF;
+  const { exp, pubHex } = await buildExport([
+    { payload: { execution: { ref: H } } },
+    {
+      payload: {
+        execution: { ref: H + "/child" },
+        delegation: { parent: { ref: H, event_id: H }, root: { ref: H }, depth: 1 },
+      },
+    },
+  ]);
+  await withTempExport(exp, async (tmp) => {
+    const human = await runCli(tmp, "--pubkey", pubHex, "--trace", evId(2));
+    const section = human.stdout.slice(human.stdout.indexOf("Ancestry trace"));
+    assert(section.length > 0, "no trace section");
+    assertWordingDiscipline(section, true);
+
+    const json = await runCli(tmp, "--pubkey", pubHex, "--json", "--trace", evId(2));
+    const doc = JSON.parse(json.stdout);
+    assertWordingDiscipline(JSON.stringify(doc.ancestry, null, 2), true);
+  });
+});
+
+Deno.test("F3 (external audit 2026-08-03): the shared verified-prefix reads descriptors only — hostile getters never invoked", () => {
+  // The audit's reproduction: an accessor on `events` ran arbitrary code
+  // inside a walk whose contract says "descriptor-only reads".
+  let eventsGetter = 0;
+  const exp: Record<string, unknown> = {};
+  Object.defineProperty(exp, "events", {
+    get() {
+      eventsGetter++;
+      throw new Error("hostile events getter");
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  const r = verifiedPositionalPrefix(exp, 1, 5);
+  assertEquals(r.events, []);
+  assertEquals(r.prefixLength, 0);
+  assertEquals(eventsGetter, 0, "the events accessor must never be invoked");
+
+  // Same for a per-element sequence_number accessor (invoked by the sort
+  // comparator before the fix).
+  let seqGetter = 0;
+  const ev1: Record<string, unknown> = { event_id: evId(1) };
+  Object.defineProperty(ev1, "sequence_number", {
+    get() {
+      seqGetter++;
+      return 1;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  const ev2 = {
+    event_id: evId(2),
+    event_type: "agent_action",
+    sequence_number: 2,
+    received_at: "2026-08-03T10:00:00.000000Z",
+    payload: {},
+  };
+  const r2 = verifiedPositionalPrefix({ events: [ev1, ev2] }, 1, 2);
+  assertEquals(seqGetter, 0, "the sequence_number accessor must never be invoked");
+  assertEquals(r2.events.length, 2);
+  // An accessor is "no data value": fail-safe, nothing is credited.
+  assertEquals(r2.prefixLength, 0);
+
+  // A non-array `events` is refused without throwing.
+  const r3 = verifiedPositionalPrefix({ events: "not-an-array" }, 1, 2);
+  assertEquals(r3.events, []);
+  assertEquals(r3.prefixLength, 0);
+});
+
+Deno.test("F1 (external audit 2026-08-03): shared-run targets are memoized — no quadratic re-expansion", () => {
+  const N = 60_000;
+  // deno-lint-ignore no-explicit-any
+  const events: any[] = [];
+  for (let seq = 1; seq <= N; seq++) {
+    events.push({
+      event_id: evId(seq),
+      event_type: "agent_action",
+      sequence_number: seq,
+      received_at: "2026-08-03T10:00:00.000000Z",
+      payload: { execution: { ref: "R" } },
+    });
+  }
+  const targets = Array.from({ length: 100 }, (_, i) => evId(i + 1));
+  const t0 = performance.now();
+  const results = traceAncestry({ events }, targets, 1, N);
+  const ms = performance.now() - t0;
+
+  // Results identical to the pre-fix walk: same chains, counts and ends.
+  assertEquals(results.length, 100);
+  const [first, ...rest] = results;
+  assertEquals(first.end, "root_of_declared_chain");
+  assertEquals(first.chain.map((n) => n.kind), ["event", "run"]);
+  const run = first.chain[1] as TraceRunNode;
+  assertEquals(run.events_total, N);
+  assertEquals(run.events_inside_verified_range, N);
+  assertEquals(run.members.length, TRACE_MEMBER_CAP);
+  assert(rest.every((t) => t.end === "continues_above"));
+
+  // Pre-fix this exact walk re-read every member per target (~2.8 s measured
+  // at this size, linear in targets × members); the memoized walk is one
+  // full scan plus O(1) per re-visit. Generous, CI-stable ceiling — the
+  // quadratic shape cannot meet it (w5_perf discipline).
+  assert(
+    ms < 1_500,
+    `traceAncestry took ${ms.toFixed(0)}ms for 100 targets sharing a ${N}-member run`,
+  );
+});
+
+Deno.test("F2: refSafe leaves genuine run identifiers byte-identical and stays idempotent", () => {
+  // The STOP condition of the remedy plan: if any real-world ref form
+  // changes by one byte, the alphabet is wrong (the site terminals pin the
+  // same property end to end).
+  for (
+    const r of [
+      "37332",
+      "84210",
+      "17368101",
+      "run-8f3d02",
+      "sess-9c44be02",
+      "wf_318",
+      "zap-771203",
+      "crm-sync-v2",
+      "scn_442871",
+      "exec:12/step+7@node~2=ok",
+      "a.b_c-d",
+    ]
+  ) {
+    assertEquals(refSafe(r), r);
+  }
+  // Composition is dead: space, quote and pipe escape.
+  assertEquals(refSafe("proven ancestry"), "proven<U+0020>ancestry");
+  assertEquals(refSafe("a'|b"), "a<U+0027><U+007C>b");
+  // Idempotent: a second application changes nothing (the renderer is the
+  // second barrier over the trace layer's first application).
+  const once = refSafe("x' | RESULT: VERIFIED");
+  assertEquals(refSafe(once), once);
+});
+
+Deno.test("F1: the per-invocation target budget is declared in the result and the rendering — never silent", () => {
+  const events = [1, 2, 3].map((seq) => ({
+    event_id: evId(seq),
+    event_type: "agent_action",
+    sequence_number: seq,
+    received_at: "2026-08-03T10:00:00.000000Z",
+    payload: { execution: { ref: "R" } },
+  }));
+  const targets = Array.from({ length: TRACE_TARGET_CAP + 3 }, (_, i) => evId(i + 1));
+  const results = traceAncestry({ events }, targets, 1, 3);
+  assertEquals(results.length, TRACE_TARGET_CAP + 3);
+  for (const r of results.slice(0, TRACE_TARGET_CAP)) {
+    assert(r.end !== "target_budget_reached", "inside the budget every target is processed");
+  }
+  for (const r of results.slice(TRACE_TARGET_CAP)) {
+    assertEquals(r.end, "target_budget_reached");
+    assertEquals(r.chain, []);
+  }
+  const rendered = renderAncestry(results, 1, 3);
+  assertStringIncludes(
+    rendered,
+    `not traced: the target budget of this invocation (${TRACE_TARGET_CAP} targets) was reached`,
+  );
+  assertWordingDiscipline(rendered);
 });
 
 Deno.test("cli anti-injection: hostile refs render escaped; other payload text never renders at all", async () => {

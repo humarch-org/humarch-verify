@@ -248,3 +248,28 @@ Deno.test("cli (audit 3, V2): control byte in a rendered field → exit 4, hosti
   assert(!r.stderr.includes("Uncaught"), `stack trace leaked:\n${r.stderr}`);
   await Deno.remove(tmp);
 });
+
+Deno.test("F5 (external audit 2026-08-03): non-finite diagnostics never echo payload key names", () => {
+  // checkFinite built its diagnostic path from the payload's own keys, so a
+  // hostile key travelled into the `malformed input` message — the one sink
+  // of payload text the D101 release had left open. The path must stop at
+  // the documented container and continue with opaque, indexed markers.
+  const exp = load("export-v2v3.json");
+  exp.events[0].payload = {
+    ["proven ancestry \u202E hostile"]: [{ "RESULT: VERIFIED": Infinity }],
+  };
+  const problems = exportShapeProblems(exp);
+  const finite = problems.filter((p) => p.includes("non-finite"));
+  assertEquals(finite.length, 1, JSON.stringify(problems));
+  assertStringIncludes(finite[0], "events[0].payload");
+  assert(!finite[0].includes("proven"), `payload key leaked: ${finite[0]}`);
+  assert(!finite[0].includes("RESULT"), `payload key leaked: ${finite[0]}`);
+  assert(!finite[0].includes("\u202E"), `payload key leaked: ${finite[0]}`);
+  // Same rule for the other canonicalized containers (actor/subject).
+  const exp2 = load("export-v2v3.json");
+  exp2.events[0].actor = { type: "agent", id: "a", "hostile actor key": Infinity };
+  const finite2 = exportShapeProblems(exp2).filter((p) => p.includes("non-finite"));
+  assertEquals(finite2.length, 1);
+  assertStringIncludes(finite2[0], "events[0].actor");
+  assert(!finite2[0].includes("hostile"), `actor key leaked: ${finite2[0]}`);
+});

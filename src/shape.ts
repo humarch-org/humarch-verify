@@ -82,6 +82,17 @@ function checkFinite(problems: string[], path: string, root: unknown): void {
   // getters), a throwing reflective step must not escape, and the whole walk
   // is bounded. Only JSON.parse output reaches it through the CLI; the panel
   // and library callers deserve the same floor.
+  //
+  // External audit 2026-08-03 (F5): the diagnostic path used to embed the
+  // payload's own KEYS — the one sink of payload text this boundary had
+  // left open (V2: the message is interpolated into the CLI's stderr and
+  // into the panel's verifyExport error). The path now stops at the
+  // documented container (`path`, e.g. `events[i].payload`) and continues
+  // with opaque markers: canonical array indices stay (numeric), every
+  // other key renders as `<member j>` — its position in own-key order. The
+  // lost diagnostic precision is accepted and intentional: both consumers
+  // only need WHERE in the export the problem sits, never the hostile key
+  // text.
   const stack: [string, unknown][] = [[path, root]];
   const seen = new WeakSet<object>();
   let budget = 2_000_000;
@@ -98,12 +109,17 @@ function checkFinite(problems: string[], path: string, root: unknown): void {
     if (seen.has(v)) continue;
     seen.add(v);
     try {
-      for (const key of Reflect.ownKeys(v)) {
+      const keys = Reflect.ownKeys(v);
+      for (let j = 0; j < keys.length; j++) {
+        const key = keys[j];
         if (typeof key !== "string") continue;
         try {
           const d = Object.getOwnPropertyDescriptor(v, key);
           if (d !== undefined && d.enumerable === true && "value" in d) {
-            stack.push([Array.isArray(v) ? `${p}[${key}]` : `${p}.${key}`, d.value]);
+            const segment = Array.isArray(v) && /^(0|[1-9]\d*)$/.test(key)
+              ? `[${key}]`
+              : `.<member ${j}>`;
+            stack.push([p + segment, d.value]);
           }
         } catch {
           // one unreadable property never invalidates the others

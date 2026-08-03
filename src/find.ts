@@ -60,6 +60,22 @@ export function isArtifactTarget(value: string): boolean {
  * reflective step is inside the try — a Proxy whose ownKeys trap throws
  * yields "no children", never an exception escaping to a stack trace.
  */
+/**
+ * Own enumerable DATA property of a container, defensively (external audit
+ * 2026-08-03, F3): accessors are treated as absent — never invoked — and a
+ * reflective step that throws yields `undefined`, never an escaping
+ * exception. The twin of the trace.ts helper, at the shared prefix boundary.
+ */
+function ownDataProp(container: unknown, key: string): unknown {
+  if (typeof container !== "object" || container === null) return undefined;
+  try {
+    const d = Object.getOwnPropertyDescriptor(container, key);
+    return d !== undefined && d.enumerable === true && "value" in d ? d.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function dataValues(container: object): unknown[] {
   const out: unknown[] = [];
   try {
@@ -127,6 +143,17 @@ function payloadDeclares(payload: unknown, targetLower: string): boolean {
  * Exported: the --trace ancestry walk (D101) positions its nodes against the
  * SAME sorted list and the SAME prefix — one implementation of the audit-F1
  * computation, never a re-derivation (user decision 2026-08-03).
+ *
+ * Descriptor-only at the shared boundary (external audit 2026-08-03, F3):
+ * this function is part of the walk whose contract says hostile accessors
+ * are never invoked, yet it read `exp.events` and each `sequence_number` as
+ * plain property accesses — a getter ran arbitrary code and its throw
+ * escaped. `events` and every element's `sequence_number` are now read as
+ * own DATA properties, once, before the sort; the sort comparator sees only
+ * the copied numbers (an accessor or unreadable value is NaN, which the
+ * comparator treats exactly as the old code treated a non-number). A
+ * non-array `events` yields the fail-safe empty result instead of a throw.
+ * Genuine JSON.parse output sorts and measures byte-identically.
  */
 export function verifiedPositionalPrefix(
   // deno-lint-ignore no-explicit-any
@@ -135,9 +162,13 @@ export function verifiedPositionalPrefix(
   verifiedThrough: number | null,
   // deno-lint-ignore no-explicit-any
 ): { events: any[]; prefixLength: number } {
-  // deno-lint-ignore no-explicit-any
-  const events = [...((exp?.events ?? []) as any[])]
-    .sort((a, b) => a.sequence_number - b.sequence_number);
+  const raw = ownDataProp(exp, "events");
+  if (!Array.isArray(raw)) return { events: [], prefixLength: 0 };
+  const decorated = raw.map((ev) => {
+    const s = ownDataProp(ev, "sequence_number");
+    return { ev, seq: typeof s === "number" ? s : NaN };
+  });
+  decorated.sort((a, b) => a.seq - b.seq);
 
   let prefixLength = 0;
   if (
@@ -145,16 +176,15 @@ export function verifiedPositionalPrefix(
     typeof verifiedThrough === "number" && Number.isFinite(verifiedThrough)
   ) {
     let prev: number | null = null;
-    for (const ev of events) {
-      const seq = ev?.sequence_number;
-      if (typeof seq !== "number" || !Number.isFinite(seq)) break;
+    for (const { seq } of decorated) {
+      if (!Number.isFinite(seq)) break;
       if (prev !== null && seq <= prev) break; // duplicate or non-monotonic
       if (seq < verifiedFrom || seq > verifiedThrough) break;
       prev = seq;
       prefixLength++;
     }
   }
-  return { events, prefixLength };
+  return { events: decorated.map((d) => d.ev), prefixLength };
 }
 
 /**

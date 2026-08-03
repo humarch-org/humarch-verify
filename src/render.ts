@@ -17,6 +17,7 @@ import {
   ANCESTRY_NOTE,
   ANCESTRY_SEMANTICS,
   TRACE_DEPTH_CAP,
+  TRACE_TARGET_CAP,
   type TraceEventRef,
   type TraceResult,
 } from "./trace.ts";
@@ -383,8 +384,9 @@ export function renderHuman(
  * Values are length-capped too: a megabyte-long identifier is not a
  * rendering a reader can act on.
  *
- * Exported: the --trace evidence bundle renders declared payload refs and
- * MUST reuse this, never re-derive it.
+ * NOT strict enough for declared payload refs: printable ASCII composes
+ * words and verdict look-alike lines (external audit 2026-08-03, F2). The
+ * --trace surfaces MUST use refSafe below instead.
  */
 export function terminalSafe(value: string, maxLength = 128): string {
   const clipped = value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
@@ -394,6 +396,43 @@ export function terminalSafe(value: string, maxLength = 128): string {
     out += cp >= 0x20 && cp <= 0x7e
       ? ch
       : "<U+" + cp.toString(16).toUpperCase().padStart(4, "0") + ">";
+  }
+  return out;
+}
+/**
+ * Ref-safe rendering of a DECLARED payload reference (external audit
+ * 2026-08-03, F2 — reclassified High). terminalSafe neutralizes controls
+ * and non-ASCII but passes every printable ASCII character through —
+ * spaces, quotes, pipes and letters included — so a hostile ref could
+ * compose words, a forbidden formulation and a verdict look-alike line
+ * INSIDE the trace output: the wording discipline D101 hangs on was
+ * breakable by data (seven of the nine end branches rendered it). Refs are
+ * machine identifiers (Make/n8n execution ids, session ids, agent run
+ * refs), so the allowed alphabet is what those actually need — letters,
+ * digits and `. _ - : / + @ ~ =` — and EVERYTHING else (space, quote and
+ * pipe included) escapes to `<U+XXXX>`: with the space escaped no phrase
+ * can render, and with quote/pipe/newline escaped nothing breaks out of
+ * its delimiter. Comparisons always happen on the raw values (D101): this
+ * is display only. Idempotent by construction — an already-escaped
+ * `<U+XXXX>` token passes through — so the trace layer and this renderer
+ * both apply it: the second application is the direct-caller barrier.
+ */
+const REF_ALLOWED = /[0-9A-Za-z._\-:/+@~=]/;
+const REF_ESCAPE_TOKEN = /^<U\+[0-9A-F]{4,6}>/;
+export function refSafe(value: string, maxLength = 128): string {
+  const clipped = value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
+  let out = "";
+  for (let i = 0; i < clipped.length;) {
+    const esc = REF_ESCAPE_TOKEN.exec(clipped.slice(i));
+    if (esc) {
+      out += esc[0];
+      i += esc[0].length;
+      continue;
+    }
+    const cp = clipped.codePointAt(i) as number;
+    const ch = String.fromCodePoint(cp);
+    out += REF_ALLOWED.test(ch) ? ch : "<U+" + cp.toString(16).toUpperCase().padStart(4, "0") + ">";
+    i += ch.length;
   }
   return out;
 }
@@ -439,6 +478,17 @@ export function jsonSafe(text: string): string {
     (ch) => {
       const cp = ch.codePointAt(0) as number;
       if (cp === 0x0a || cp === 0x0d || cp === 0x09) return ch; // structure
+      // Supplementary code points escape as their surrogate PAIR (external
+      // audit 2026-08-03, F6): `\u` + five hex digits is not a JSON escape,
+      // so JSON.parse would read four digits plus a stray character and the
+      // value would CHANGE — on a function whose contract is preservation.
+      if (cp > 0xffff) {
+        const c = cp - 0x10000;
+        const hi = 0xd800 + (c >> 10);
+        const lo = 0xdc00 + (c & 0x3ff);
+        return "\\u" + hi.toString(16).padStart(4, "0") +
+          "\\u" + lo.toString(16).padStart(4, "0");
+      }
       return "\\u" + cp.toString(16).padStart(4, "0");
     },
   );
@@ -496,12 +546,16 @@ export function renderArtifactSearch(
  * always named (exact event vs run-level), and the forbidden formulations
  * ("verified ancestry", causation talk) never render — pinned by test.
  *
- * Every interpolated value passes through terminalSafe here EVEN THOUGH
- * trace.ts already sanitizes refs: a public renderer must not rest on a
- * precondition its own signature does not express (the F2 remedy lesson).
- * terminalSafe is idempotent on already-escaped values, so the double
- * application is harmless for genuine input and load-bearing for a direct
- * caller's hostile one.
+ * Every interpolated value passes through refSafe here EVEN THOUGH trace.ts
+ * already sanitizes refs: a public renderer must not rest on a precondition
+ * its own signature does not express (the 2026-08-02 F2 remedy lesson, and
+ * the 2026-08-03 F2 finding — terminalSafe let printable ASCII compose
+ * phrases, so the ref sink needs the stricter identifier alphabet). refSafe
+ * is idempotent on already-escaped values, so the double application is
+ * harmless for genuine input and load-bearing for a direct caller's hostile
+ * one. Event fields (event_id, event_type, received_at) go through the same
+ * sink: genuine values (UUIDs, snake_case types, ISO timestamps) sit fully
+ * inside the identifier alphabet and render byte-identically.
  */
 export function renderAncestry(
   traces: TraceResult[],
@@ -515,11 +569,11 @@ export function renderAncestry(
     within
       ? `inside the verified range (${range})`
       : `OUTSIDE the verified range (${range}): integrity is not established for this event`;
-  const ref = (v: string | null): string => terminalSafe(v ?? "?", 72);
+  const ref = (v: string | null): string => refSafe(v ?? "?", 72);
   const evLine = (e: TraceEventRef): string =>
-    `event ${terminalSafe(e.event_id, 48)} · seq ${
+    `event ${refSafe(e.event_id, 48)} · seq ${
       e.sequence_number === null ? "?" : Number(e.sequence_number)
-    } · ${terminalSafe(e.event_type, 48)} · received ${terminalSafe(e.received_at, 32)} — ${
+    } · ${refSafe(e.event_type, 48)} · received ${refSafe(e.received_at, 32)} — ${
       pos(e.within_verified_range)
     }`;
 
@@ -529,26 +583,35 @@ export function renderAncestry(
   lines.push(ANCESTRY_SEMANTICS);
   for (const t of traces) {
     lines.push("");
+    if (t.end === "target_budget_reached") {
+      // The declared-truncation discipline of the depth cap (external audit
+      // 2026-08-03, F1): a surplus target is reported untraced, never
+      // dropped in silence and never walked without bound.
+      lines.push(
+        `[--] Event ${
+          refSafe(t.target, 48)
+        } — not traced: the target budget of this invocation (${TRACE_TARGET_CAP} targets) was reached; trace it in a separate invocation.`,
+      );
+      continue;
+    }
     if (!t.found_in_export) {
       lines.push(
         `[--] Event ${
-          terminalSafe(t.target, 48)
+          refSafe(t.target, 48)
         } — not present in this export: no ancestry can be assembled from this file (the event may lie outside the exported range).`,
       );
       continue;
     }
     const hops = Number(t.chain.length) - 1;
     lines.push(
-      `[--] Event ${terminalSafe(t.target, 48)} — declared chain, ${hops} hop${
-        hops === 1 ? "" : "s"
-      }:`,
+      `[--] Event ${refSafe(t.target, 48)} — declared chain, ${hops} hop${hops === 1 ? "" : "s"}:`,
     );
     for (const node of t.chain) {
       if (node.kind === "event") {
         const head = node.hop === "start" ? "     " : "     ^ declared parent (exact event): ";
         if (node.repeated) {
           lines.push(
-            `${head}event ${terminalSafe(node.event.event_id, 48)} — already shown above.`,
+            `${head}event ${refSafe(node.event.event_id, 48)} — already shown above.`,
           );
           continue;
         }
