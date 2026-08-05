@@ -827,3 +827,148 @@ export async function verifyQualifiedTimestamp(
       : "valid token, untrusted TSA, no presumption") + lateSuffix,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Per-seal verdict (D104, SPEC 1.5.0 §7.2) — additive, exit-neutral. The
+// on-demand chain seal is an RFC 3161 token over the 32 bytes of ONE event
+// hash: the chain head at sealing time. It attaches the presumption to that
+// head; every event of the verified prefix before it inherits the
+// anteriority through recomputation — never a per-event mark.
+// ---------------------------------------------------------------------------
+export type ChainSealStatus = "valid" | "invalid" | "untrusted";
+
+export interface ChainSealVerdict {
+  /** The declared sealed sequence (echo of the element, for rendering). */
+  sequence_number: number | null;
+  status: ChainSealStatus;
+  /** The token commits to exactly the event hash RECOMPUTED from the D11
+   * pre-image at the declared sequence, within the verified prefix — the
+   * declared `event_hash`/element fields are attacker data (same discipline
+   * as `matches_aggregate` above, review F1 + external audit trap 11). */
+  matches_head: boolean | null;
+  signature_valid: boolean | null;
+  trusted_tsa: boolean | null;
+  /** genTime not earlier than the sealed event's reception (4h skew): a seal
+   * "issued" before the event it seals existed is incoherent. false never
+   * degrades the status — the limitation is declared in the note. */
+  gen_time_consistent: boolean | null;
+  tsa_name: string | null;
+  policy_oid: string | null;
+  gen_time: string | null;
+  note: string;
+}
+
+function sealGenTimeConsistent(receivedAtIso: unknown, genTimeIso: string): boolean | null {
+  if (typeof receivedAtIso !== "string") return null;
+  const receivedS = Date.parse(receivedAtIso) / 1000;
+  const genS = Date.parse(genTimeIso) / 1000;
+  if (!Number.isFinite(receivedS) || !Number.isFinite(genS)) return null;
+  return genS >= receivedS - QT_TIME_SKEW_BEFORE_S;
+}
+
+function sealInvalid(
+  sequence: number | null,
+  note: string,
+  extra: Partial<ChainSealVerdict> = {},
+): ChainSealVerdict {
+  return {
+    sequence_number: sequence,
+    status: "invalid",
+    matches_head: null,
+    signature_valid: null,
+    trusted_tsa: null,
+    gen_time_consistent: null,
+    tsa_name: null,
+    policy_oid: null,
+    gen_time: null,
+    note,
+    ...extra,
+  };
+}
+
+export async function verifyChainSeal(
+  // deno-lint-ignore no-explicit-any
+  seal: any,
+  trustedFprs: Set<string>,
+  /** The event hash RECOMPUTED from the D11 pre-image at the declared
+   * sequence (lowercase hex, 64 chars) — REQUIRED, no fallback to the
+   * element's fields or the event's declared `event_hash`: a signature that
+   * permits the unsafe call is a defect of the signature (external audit
+   * 2026-07-29, §7.1 precedent). */
+  expectedHeadHex: string,
+  /** `received_at` of the sealed event (from the verified prefix), for the
+   * genTime coherence fact; null when unavailable. */
+  sealedReceivedAtIso: string | null,
+): Promise<ChainSealVerdict> {
+  const sequence = typeof seal?.sequence_number === "number" ? seal.sequence_number : null;
+  if (!/^[0-9a-f]{64}$/i.test(String(expectedHeadHex ?? ""))) {
+    return sealInvalid(
+      sequence,
+      "no recomputed head hash supplied to bind the token to (§7.2)",
+    );
+  }
+  let parsed: ParsedTst;
+  try {
+    const raw = typeof seal?.token_base64 === "string" ? seal.token_base64 : "";
+    if (raw.length > Math.ceil(MAX_TST_BYTES / 3) * 4 + 4) {
+      throw new TstParseError(`token over the ${MAX_TST_BYTES}-byte cap`);
+    }
+    parsed = parseTst(b64ToBytes(raw));
+  } catch {
+    return sealInvalid(sequence, "unreadable token (not a valid RFC 3161 TimeStampToken)");
+  }
+  const expected = expectedHeadHex.toLowerCase();
+  const matches = parsed.hashAlgorithmOid === OID_SHA256 &&
+    parsed.messageImprintHex === expected;
+  if (!matches) {
+    return sealInvalid(
+      sequence,
+      "the token does not commit to the chain head recomputed at the declared sequence (D11)",
+      {
+        matches_head: false,
+        tsa_name: parsed.tsaName,
+        policy_oid: parsed.policyOid,
+        gen_time: parsed.genTime,
+      },
+    );
+  }
+  const sig = await verifyTstSignature(parsed);
+  if (!sig.valid) {
+    return sealInvalid(
+      sequence,
+      sig.unsupportedAlgorithm
+        ? "unsupported signature algorithm for this verifier — check the token with standard RFC 3161 tooling (e.g. openssl ts)"
+        : "the TSA signature over the token does not verify",
+      {
+        matches_head: true,
+        signature_valid: false,
+        tsa_name: parsed.tsaName,
+        policy_oid: parsed.policyOid,
+        gen_time: parsed.genTime,
+      },
+    );
+  }
+  const tsaName = parsed.tsaName ?? sig.signerCn;
+  const gen_time_consistent = sealGenTimeConsistent(sealedReceivedAtIso, parsed.genTime);
+  const earlySuffix = gen_time_consistent === false
+    ? " — genTime precedes the sealed event's reception: it proves existence at its own genTime"
+    : "";
+  const fpr = sig.signerCertDer === null
+    ? null
+    : toHexLocal(await digest("SHA-256", sig.signerCertDer));
+  const trusted = fpr !== null && trustedFprs.has(fpr);
+  return {
+    sequence_number: sequence,
+    status: trusted ? "valid" : "untrusted",
+    matches_head: true,
+    signature_valid: true,
+    trusted_tsa: trusted,
+    gen_time_consistent,
+    tsa_name: tsaName,
+    policy_oid: parsed.policyOid,
+    gen_time: parsed.genTime,
+    note: (trusted
+      ? `valid · ${tsaName ?? "(unnamed TSA)"} · ${parsed.genTime}`
+      : "valid token, untrusted TSA, no presumption") + earlySuffix,
+  };
+}

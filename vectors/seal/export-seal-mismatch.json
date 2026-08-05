@@ -1,0 +1,147 @@
+{
+  "format": "humarch-export/v1",
+  "generated_at": "2026-07-06T15:17:54.686611Z",
+  "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+  "range": {
+    "from_sequence": 1,
+    "to_sequence": 3
+  },
+  "genesis_note": "prev_hash of sequence 1 = sha256('humarch:genesis:' + tenant_id), see humarch-spec",
+  "signing_keys": [
+    {
+      "signing_key_id": "ed25519:dc5578a147d359bf",
+      "algorithm": "ed25519",
+      "public_key": "efddcd5a449c0efbc6dcef4c9e951129fc70bad24cf9515b700ce70cd70f677f",
+      "created_at": "2026-07-06T11:08:46.425645Z",
+      "retired_at": null
+    }
+  ],
+  "events": [
+    {
+      "event_id": "25288676-eaa4-4d7d-a616-2c887f45b17b",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 1,
+      "received_at": "2026-07-06T12:04:58.583985Z",
+      "occurred_at": "2026-07-06T12:04:58.583985Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 1,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "75a4c8834ed2449336fed490ffbb31b1f1c69c799a386c947df32230a5e1f180",
+      "prev_hash": "894084694a46e9dfb87d90eaf787b087c8b57dec0f213ab97759835a61aada5d",
+      "event_hash": "da328f04e6c823c4251b7626d69ebb3840a2fb900aada644a9ee5e149e0b463a",
+      "signature": "c9c6d49371ad662ceda46895f8ab031d0bc88738b476204188ed91a7c8523fda9f1506581d36e1b0f091b89fa7952dcffb88cf659388cbcdb58e053d3e5d7408",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    },
+    {
+      "event_id": "7f6e7e39-9bff-46ae-bc10-dcd469693888",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 2,
+      "received_at": "2026-07-06T12:04:58.784689Z",
+      "occurred_at": "2026-07-06T12:04:58.784689Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 2,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "77344fdcb3578c18dd809b033b198407b7f1794c80e4e99c88f776843a584ae5",
+      "prev_hash": "da328f04e6c823c4251b7626d69ebb3840a2fb900aada644a9ee5e149e0b463a",
+      "event_hash": "67a18a7c64c8060f5d28ac57b58e5838034fe14df7b264b4962a6fc34ab581c2",
+      "signature": "13b09660d2b2b7c237cbbf8759215e5ffc825acf6e7e42af4b54c8152c7755b0641e71956592b34c966805baae1e270a1cb6dfdbf9699a51c5d6265e00f56105",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    },
+    {
+      "event_id": "f39ce817-d6f9-43cd-b431-57a4bf550907",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 3,
+      "received_at": "2026-07-06T12:04:58.868613Z",
+      "occurred_at": "2026-07-06T12:04:58.868613Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 3,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "7ecec0a1245a2fad7ee6ad81a82f645ba16f26b10bf3bbdeca3b31071a70e461",
+      "prev_hash": "67a18a7c64c8060f5d28ac57b58e5838034fe14df7b264b4962a6fc34ab581c2",
+      "event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f",
+      "signature": "2334188a9ce4bf1323cd82e9f25f9ce714f0da872840ccb48100b86d4e250a127617de9158e15cc7de9340d800f6de5ecd9c80db3ccccbfb7a24c615484c490b",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    }
+  ],
+  "anchors": [
+    {
+      "anchor_date": "2026-07-06",
+      "aggregate_hash": "ee78becb1ac2a1d07aea0b1e32a326d6df410f52adc77d760893541991409290",
+      "ots_status": "confirmed",
+      "ots_btc_block": 956916,
+      "entry": {
+        "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+        "last_event_id": "f39ce817-d6f9-43cd-b431-57a4bf550907",
+        "last_event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f",
+        "last_sequence_number": 3
+      },
+      "anchor_entries_for_aggregate": [
+        {
+          "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+          "last_event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f"
+        }
+      ],
+      "ots_file_base64": "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",
+      "qualified_timestamp": {
+        "token_base64": "MIIElwYJKoZIhvcNAQcCoIIEiDCCBIQCAQMxDzANBglghkgBZQMEAgEFADCB2AYLKoZIhvcNAQkQAQSggcgEgcUwgcICAQEGCisGAQQBho0fAQEwMTANBglghkgBZQMEAgEFAAQg7ni+yxrCodB66gseMqMm1t9BD1Ktx312CJNUGZFAkpACAQQYDzIwMjYwNzI3MTgxNjAyWjADAgEBAghblv25dfWa96BbpFkwVzEtMCsGA1UEAwwkSHVtYXJjaCBUZXN0IFRTQSAodW50cnVzdGVkIGZpeHR1cmUpMRkwFwYDVQQKDBBIdW1hcmNoIEZpeHR1cmVzMQswCQYDVQQGEwJJVKCCAgowggIGMIIBraADAgECAhROICv/3+2NsHDKZOlqDNB/lrUMpzAKBggqhkjOPQQDAjBXMS0wKwYDVQQDDCRIdW1hcmNoIFRlc3QgVFNBICh1bnRydXN0ZWQgZml4dHVyZSkxGTAXBgNVBAoMEEh1bWFyY2ggRml4dHVyZXMxCzAJBgNVBAYTAklUMB4XDTI2MDcyNzE3NTQxOFoXDTM2MDcyNDE3NTQxOFowVzEtMCsGA1UEAwwkSHVtYXJjaCBUZXN0IFRTQSAodW50cnVzdGVkIGZpeHR1cmUpMRkwFwYDVQQKDBBIdW1hcmNoIEZpeHR1cmVzMQswCQYDVQQGEwJJVDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBRVSSkdi3phTN9ATeXX2tmeoD91RyoNqyURqA9u2CWKoUg2smpCfgZxT7J/rX36qWoRM2JZyQ3bziz/5TJEHSCjVzBVMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMIMB0GA1UdDgQWBBQRqlYF+gaVeL45ohxoVwjETOwuUTAKBggqhkjOPQQDAgNHADBEAiACHTJ6pvPIRCF0/PPtN96N49RTaRH48sYUXa4Rqfp4tgIgMA7zIp3DBSvO7rERpJQ5OQdU3Zc6v5P13FwQfUk+tOExggGDMIIBfwIBATBvMFcxLTArBgNVBAMMJEh1bWFyY2ggVGVzdCBUU0EgKHVudHJ1c3RlZCBmaXh0dXJlKTEZMBcGA1UECgwQSHVtYXJjaCBGaXh0dXJlczELMAkGA1UEBhMCSVQCFE4gK//f7Y2wcMpk6WoM0H+WtQynMA0GCWCGSAFlAwQCAQUAoIGkMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRABBDAcBgkqhkiG9w0BCQUxDxcNMjYwNzI3MTgxNjAyWjAvBgkqhkiG9w0BCQQxIgQg+3IV8Y93DZsBlOujfTnSWg8tJPXKfxsIE5aLMTDmhLgwNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQgYtfy3FQj5dP5dsaA5HJQOzP6PpmRTlrf4M2qRzkIuocwCgYIKoZIzj0EAwIERzBFAiBMt8Xcx06qc47+kQ70zL6EZAO8qWwsnowaPuodlyF2hAIhANPw82bI8L1Rht+1tJrKXDK4KZBCe17RX7Bmj04K3Y0v",
+        "tsa_name": "Humarch Test TSA (untrusted fixture)",
+        "policy_oid": "1.3.6.1.4.1.99999.1.1",
+        "gen_time": "2026-07-27T18:16:02Z"
+      }
+    }
+  ],
+  "chain_seals": [
+    {
+      "sequence_number": 3,
+      "token_base64": "MIID2AYJKoZIhvcNAQcCoIIDyTCCA8UCAQMxDzANBglghkgBZQMEAgEFADBuBgsqhkiG9w0BCRABBKBfBF0wWwIBAQYKKwYBBAGGjR8BAjAxMA0GCWCGSAFlAwQCAQUABCDaMo8E5sgjxCUbdibWnrs4QKL7kAqtpkSp7l4UngtGOgIBAxgPMjAyNjA4MDUwNzI4NTZaMAMCAQGgggHYMIIB1DCCAXugAwIBAgIUNLbz13C4qtnHGhalxPZbDYFlNx0wCgYIKoZIzj0EAwIwNDEyMDAGA1UEAwwpSHVtYXJjaCBTZWFsIFRlc3QgVFNBICh1bnRydXN0ZWQgZml4dHVyZSkwHhcNMjYwODA1MDcyODIyWhcNNDYwNzMxMDcyODIyWjA0MTIwMAYDVQQDDClIdW1hcmNoIFNlYWwgVGVzdCBUU0EgKHVudHJ1c3RlZCBmaXh0dXJlKTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNXBAQdVdoyUV89gXVWjLMxKXQXISGJsBZ4UkKmk8/VVa+m4CkAWLjUYn4hGxbwQ82C0RDokbjnD4TmcmjQyKGWjazBpMB0GA1UdDgQWBBRiwHZw5xZqQwTHp0cfHIsfReKNBzAfBgNVHSMEGDAWgBRiwHZw5xZqQwTHp0cfHIsfReKNBzAPBgNVHRMBAf8EBTADAQH/MBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMIMAoGCCqGSM49BAMCA0cAMEQCIFS0MW/xqig7Eqap6OXKZXzb6X3tuPVfrlW6ZUEqN9vYAiBn1oxEmFrlTwY/EXuSINb2kSUSn/HXpSTnmF/DjXwEVDGCAWEwggFdAgEBMEwwNDEyMDAGA1UEAwwpSHVtYXJjaCBTZWFsIFRlc3QgVFNBICh1bnRydXN0ZWQgZml4dHVyZSkCFDS289dwuKrZxxoWpcT2Ww2BZTcdMA0GCWCGSAFlAwQCAQUAoIGkMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRABBDAcBgkqhkiG9w0BCQUxDxcNMjYwODA1MDcyODU2WjAvBgkqhkiG9w0BCQQxIgQgtyGCbsIXB6JnO9pN6Fcf9yPGFd/6rDBBq4iw31bw2hwwNwYLKoZIhvcNAQkQAi8xKDAmMCQwIgQg291dltPCsE8jakGI05YjGNtThm9groP+mCBJG4QTUsQwCgYIKoZIzj0EAwIESDBGAiEA0bKp/5ew2DG+1kjvX/GzYVYoSWMaz7RG++kR402nb0wCIQDDRBteubrQjnQvna2/GLEJELdtH2LUzyr3DyjSM+JPvg==",
+      "tsa_name": "Humarch Seal Test TSA (untrusted fixture)",
+      "policy_oid": "1.3.6.1.4.1.99999.1.2",
+      "gen_time": "2026-08-05T07:28:40Z"
+    }
+  ]
+}

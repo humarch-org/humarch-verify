@@ -107,6 +107,28 @@ openssl ts -verify -digest <aggregate_hash> -token_in -in token.tst \
   -CAfile <QTSP CA chain>
 ```
 
+**On-demand chain seal (spec 1.5.0).** An export may carry a top-level
+`chain_seals` array: RFC 3161 timestamp tokens issued on the **32 bytes of
+one event hash** — the tenant's chain head at sealing time. The check is
+**additive and exit-neutral**: for each seal the verifier locates the
+declared sequence **within the verified positional prefix**, recomputes that
+event's hash from its own pre-image (never the declared `event_hash` field),
+checks the token commits to exactly that value, verifies the CMS signature
+and matches the signer against the same `humarch-tsa/v1` registry
+(`--tsa-trust`). The outcome is one extra line per seal
+(`[OK] Chain seal at sequence N — <TSA> · <genTime>` / `invalid` /
+`valid token, untrusted TSA, no presumption`) and never changes the exit
+code; an export without the field verifies byte-identically. Semantics,
+pinned by the spec: the seal attaches the art. 42 presumption **to the chain
+head at sealing time**; every prior event of the verified prefix inherits
+that anteriority through deterministic, reproducible recomputation — a seal
+is never a per-event mark. A seal whose sequence the export does not contain
+(or that sits beyond the verified prefix) is a declared `invalid` row. The
+token is a plain TimeStampToken: the same `openssl ts -verify` recipe above
+applies, with `-digest <event_hash recomputed at the sealed sequence>`. In
+`--json` output the verdicts appear as the additive top-level key
+`chain_seals`.
+
 **Artifact search (spec 1.4.0).** `--find-artifact <sha256-hex>` lists the
 events whose payload **declares** the given hash as a string value anywhere
 (an `external_refs[].artifact_sha256`, a `message_id_sha256`, a

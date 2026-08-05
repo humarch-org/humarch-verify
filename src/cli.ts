@@ -11,7 +11,7 @@
 // The qualified-timestamp check (D98), the --find-artifact search (D100)
 // and the --trace ancestry walk (D101) are ADDITIVE: they never change these.
 import { verifyChain } from "./verify.ts";
-import { type OtsLevel, verifyAnchors } from "./ots.ts";
+import { type OtsLevel, verifyAnchors, verifyChainSeals } from "./ots.ts";
 import {
   assess,
   jsonSafe,
@@ -255,6 +255,14 @@ async function main(): Promise<void> {
   const anchors = await verifyAnchors(exp, otsLevel, undefined, tsaRegistry);
   const { result, exitCode, properties } = assess(exp, chain, anchors, attribution);
 
+  // On-demand chain seals (D104, SPEC 1.5.0), AFTER assess and with no hand
+  // on exitCode: the seal check is ADDITIVE — an export without the field
+  // verifies byte-identically, an invalid/untrusted seal is a declared line,
+  // never a different exit. Binding is to the head hash RECOMPUTED within
+  // the verified positional prefix (verifyChainSeals), never to declared
+  // fields.
+  const chainSeals = await verifyChainSeals(exp, chain, tsaRegistry);
+
   // Informative search (D100), AFTER assess and with no hand on exitCode:
   // exit neutrality is the invariant that keeps "one verification routine".
   const artifactSearch = findTarget !== null
@@ -303,6 +311,7 @@ async function main(): Promise<void> {
         result,
         ots_level: otsLevel,
         // Additive top-level keys: chain/anchors/properties/result untouched.
+        ...(chainSeals.length ? { chain_seals: chainSeals } : {}),
         ...(artifactSearch !== null ? { artifact_search: artifactSearch } : {}),
         ...(ancestry !== null ? { ancestry } : {}),
       },
@@ -310,7 +319,7 @@ async function main(): Promise<void> {
       2,
     )));
   } else {
-    console.log(renderHuman(exp.tenant_id, chain, anchors, result, properties));
+    console.log(renderHuman(exp.tenant_id, chain, anchors, result, properties, chainSeals));
     if (artifactSearch !== null) {
       console.log(renderArtifactSearch(
         artifactSearch.target,

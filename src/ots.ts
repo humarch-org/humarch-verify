@@ -23,13 +23,16 @@ import {
   verifyBitcoinAttestations,
 } from "./ots_lite.ts";
 import {
+  type ChainSealVerdict,
   EMBEDDED_TSA,
   type QualifiedTimestampVerdict,
   trustedTsaFingerprints,
   type TsaRegistry,
+  verifyChainSeal,
   verifyQualifiedTimestamp,
 } from "./tst_lite.ts";
-import { aggregateHash, toHex } from "./verify.ts";
+import { verifiedPositionalPrefix } from "./find.ts";
+import { aggregateHash, eventHash, jcsHash, toHex, type Verdict } from "./verify.ts";
 
 const b64ToBytes = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
@@ -229,6 +232,101 @@ export async function verifyAnchors(
       note,
       qualified_timestamp,
     });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// On-demand chain seals (D104, SPEC 1.5.0 §7.2/§8 rule 12) — additive,
+// exit-neutral: the verdicts below never touch result/exitCode/properties.
+//
+// A seal binds to the event hash RECOMPUTED from the D11 pre-image at its
+// declared sequence, WITHIN the verified positional prefix (D100 rule 10:
+// positions, never an interval of declared numbers) — the element's own
+// fields and the event's declared `event_hash` are attacker data. A seal
+// whose sequence the export does not contain, or that sits beyond the
+// verified prefix, is a DECLARED invalid row: the chain up to it is not
+// proven, so "every prior event inherits the anteriority" would not hold.
+// ---------------------------------------------------------------------------
+export async function verifyChainSeals(
+  // deno-lint-ignore no-explicit-any
+  exp: any,
+  chain: Verdict,
+  tsaRegistry: TsaRegistry = EMBEDDED_TSA,
+): Promise<ChainSealVerdict[]> {
+  const seals = exp?.chain_seals;
+  if (!Array.isArray(seals) || seals.length === 0) return [];
+  const trustedFprs = trustedTsaFingerprints(tsaRegistry);
+  // The SAME sorted list and the SAME prefix computation the artifact search
+  // and the trace walk use (audit-F1 single implementation, D101 decision).
+  const { events, prefixLength } = verifiedPositionalPrefix(
+    exp,
+    chain.verified_from_sequence,
+    chain.verified_through_sequence,
+  );
+  const out: ChainSealVerdict[] = [];
+  const invalidRow = (sequence: number | null, note: string): ChainSealVerdict => ({
+    sequence_number: sequence,
+    status: "invalid",
+    matches_head: null,
+    signature_valid: null,
+    trusted_tsa: null,
+    gen_time_consistent: null,
+    tsa_name: null,
+    policy_oid: null,
+    gen_time: null,
+    note,
+  });
+  // deno-lint-ignore no-explicit-any
+  for (const seal of seals as any[]) {
+    let sequence: number | null = null;
+    // D98 (f) discipline, extended to the WHOLE row (lens-2 L1): index
+    // resolution reads event objects that, for a direct library caller, may
+    // carry hostile accessors — a throw anywhere in this row is a DECLARED
+    // invalid, never a crash of the verifier. (The CLI shape-gates first,
+    // so genuine JSON input never lands here.)
+    let verdict: ChainSealVerdict;
+    try {
+      sequence = typeof seal?.sequence_number === "number" ? seal.sequence_number : null;
+      const idx = sequence === null
+        ? -1
+        : events.findIndex((ev) => ev?.sequence_number === sequence);
+      if (idx === -1) {
+        out.push(invalidRow(
+          sequence,
+          "declared sequence not present in this export — the seal cannot be re-verified from it",
+        ));
+        continue;
+      }
+      if (idx >= prefixLength) {
+        out.push(invalidRow(
+          sequence,
+          "declared sequence beyond the verified prefix — the chain up to it is not proven by this export",
+        ));
+        continue;
+      }
+      const ev = events[idx];
+      // Recompute the sealed hash from the event's OWN pre-image parts (D11):
+      // within the verified prefix the payload/actor/subject hashes and the
+      // prev link were proven, so this recomputation is the chain's value —
+      // never the declared `event_hash` field.
+      const recomputed = await eventHash(
+        ev,
+        await jcsHash(ev.actor),
+        await jcsHash(ev.subject),
+        await jcsHash(ev.payload),
+        ev.prev_hash,
+      );
+      verdict = await verifyChainSeal(
+        seal,
+        trustedFprs,
+        recomputed,
+        typeof ev.received_at === "string" ? ev.received_at : null,
+      );
+    } catch {
+      verdict = invalidRow(sequence, "token verification failed unexpectedly");
+    }
+    out.push(verdict);
   }
   return out;
 }

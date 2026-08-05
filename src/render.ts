@@ -11,6 +11,7 @@
 // the ADDITIVE exit code 6 — exit codes 0/2/3/4/5 keep their meaning.
 import type { Verdict } from "./verify.ts";
 import type { AnchorVerdict } from "./ots.ts";
+import type { ChainSealVerdict } from "./tst_lite.ts";
 import type { Attribution } from "./issuer.ts";
 import type { ArtifactMatch } from "./find.ts";
 import {
@@ -208,6 +209,9 @@ export function renderHuman(
   anchors: AnchorVerdict[],
   result: OverallResult,
   properties: VerdictProperties,
+  // On-demand chain seals (D104, additive): [] ⇒ no line at all — an export
+  // without the field renders byte-identically to pre-1.5.
+  chainSeals: ChainSealVerdict[] = [],
 ): string {
   const lines: string[] = [];
   const eventCount =
@@ -309,6 +313,33 @@ export function renderHuman(
     }
   }
 
+  // On-demand chain seals (D104, SPEC 1.5.0): one ADDITIVE line per seal,
+  // always about the chain HEAD at its declared sequence (a chain PREFIX,
+  // never a per-event mark), exit-neutral by design — an invalid or
+  // untrusted token is an explicit warning, never a different exit code.
+  for (const s of chainSeals) {
+    const seq = typeof s.sequence_number === "number" && Number.isFinite(s.sequence_number)
+      ? String(s.sequence_number)
+      : "?";
+    switch (s.status) {
+      case "valid":
+        // A seal whose genTime precedes the sealed event's reception proves
+        // existence at its own genTime only — it must not read [OK].
+        lines.push(
+          `[${
+            s.gen_time_consistent === false ? "WARN" : "OK"
+          }] Chain seal at sequence ${seq} — ${displaySafe(s.note)}.`,
+        );
+        break;
+      case "untrusted":
+        lines.push(`[WARN] Chain seal at sequence ${seq} — ${displaySafe(s.note)}.`);
+        break;
+      case "invalid":
+        lines.push(`[WARN] Chain seal at sequence ${seq} — invalid (${displaySafe(s.note)}).`);
+        break;
+    }
+  }
+
   lines.push("");
   lines.push(...propertyLines(properties));
 
@@ -365,6 +396,18 @@ export function renderHuman(
   ) {
     lines.push(
       "Note: the qualified timestamp attaches the eIDAS art. 42 presumption to the daily aggregate; every event verifiably contained in it inherits that anteriority through deterministic, reproducible recomputation.",
+    );
+  }
+  // D104 binding semantics, same gating discipline as the qualified note
+  // (D98 (g)): the presumption claim names the chain HEAD — "every event has
+  // its own timestamp" stays a FORBIDDEN formulation. A tampered or
+  // unverified export never earns the sentence.
+  if (
+    (result === "verified" || result === "partial") &&
+    chainSeals.some((s) => s.status === "valid" && s.gen_time_consistent !== false)
+  ) {
+    lines.push(
+      "Note: the on-demand chain seal attaches the eIDAS art. 42 presumption to the chain head at sealing time; every prior event of the verified prefix inherits that anteriority through deterministic, reproducible recomputation.",
     );
   }
   return lines.join("\n");

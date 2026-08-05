@@ -375,5 +375,51 @@ export function exportShapeProblems(value: unknown): string[] {
     }
   }
 
+  // On-demand chain seals (D104, SPEC 1.5.0 §8 rule 12): OPTIONAL top-level
+  // array — the gate stays additive (its absence is the pre-1.5 form).
+  // Discipline mirrors the anchors': one seal per sealed head (a duplicate
+  // sequence is the decoy-riding pattern W3 refuses on anchor dates), and
+  // the declared ordering by sequence is a form fact, not a preference —
+  // a reordered array reads as a different document.
+  if (exp.chain_seals != null) {
+    if (!Array.isArray(exp.chain_seals)) {
+      problems.push("chain_seals: expected an array");
+    } else {
+      const seenSeq = new Set<number>();
+      let prevSeq: number | null = null;
+      // deno-lint-ignore no-explicit-any
+      exp.chain_seals.forEach((s: any, i: number) => {
+        if (!isObject(s)) {
+          problems.push(`chain_seals[${i}]: expected an object`);
+          return;
+        }
+        if (
+          typeof s.sequence_number !== "number" || !Number.isInteger(s.sequence_number) ||
+          s.sequence_number < 1
+        ) {
+          problems.push(`chain_seals[${i}].sequence_number: expected a positive integer`);
+        } else if (seenSeq.has(s.sequence_number)) {
+          problems.push(
+            `chain_seals[${i}].sequence_number: duplicate sealed sequence (at most one seal per head, D104)`,
+          );
+        } else {
+          seenSeq.add(s.sequence_number);
+          if (prevSeq !== null && s.sequence_number < prevSeq) {
+            problems.push(
+              `chain_seals[${i}].sequence_number: seals must be ordered by sequence (§8 rule 12)`,
+            );
+          }
+          prevSeq = s.sequence_number;
+        }
+        if (typeof s.token_base64 !== "string" || !isBase64(s.token_base64)) {
+          problems.push(`chain_seals[${i}].token_base64: expected a base64 string`);
+        }
+        checkDisplayString(problems, `chain_seals[${i}].tsa_name`, s.tsa_name);
+        checkString(problems, `chain_seals[${i}].policy_oid`, s.policy_oid);
+        checkString(problems, `chain_seals[${i}].gen_time`, s.gen_time);
+      });
+    }
+  }
+
   return problems;
 }
