@@ -265,6 +265,28 @@ Deno.test("render: one additive line per seal, head/prefix semantics, gated pres
 // ---------------------------------------------------------------------------
 // Shape gate + the W3 regression the plan makes mandatory.
 // ---------------------------------------------------------------------------
+Deno.test("library caller: chain_seals present-but-not-an-array is ONE declared invalid row, never a silent [] (audit F4)", async () => {
+  // The CLI shape-gates first (exit 4); a LIBRARY caller skips that gate,
+  // and before this remedy a non-array container yielded zero rows and zero
+  // declarations while a malformed element INSIDE an array yielded a
+  // declared row — an asymmetry of contract on the public surface.
+  const exp = readJson("export-seal.json");
+  const chain = await verifyChain(exp);
+  for (const notAnArray of [{}, "chain_seals", 7, true] as const) {
+    const rows = await verifyChainSeals({ ...exp, chain_seals: notAnArray }, chain, trustSeal());
+    assertEquals(rows.length, 1, `${typeof notAnArray}: one declared row`);
+    assertEquals(rows[0].status, "invalid");
+    assertEquals(rows[0].sequence_number, null);
+    assertStringIncludes(rows[0].note ?? "", "chain_seals present but not an array");
+  }
+  // Absent, null and empty stay []: an export without seals is the pre-1.5
+  // form (exit-neutrality untouched by the remedy).
+  for (const absent of [undefined, null, []] as const) {
+    const rows = await verifyChainSeals({ ...exp, chain_seals: absent }, chain, trustSeal());
+    assertEquals(rows.length, 0, `${absent === undefined ? "absent" : JSON.stringify(absent)}: no rows`);
+  }
+});
+
 Deno.test("shape: chain_seals is optional, validated when present; duplicates and disorder are form errors", () => {
   assertEquals(exportShapeProblems(readJson("export-seal.json")), []);
 

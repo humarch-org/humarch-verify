@@ -255,16 +255,6 @@ export async function verifyChainSeals(
   tsaRegistry: TsaRegistry = EMBEDDED_TSA,
 ): Promise<ChainSealVerdict[]> {
   const seals = exp?.chain_seals;
-  if (!Array.isArray(seals) || seals.length === 0) return [];
-  const trustedFprs = trustedTsaFingerprints(tsaRegistry);
-  // The SAME sorted list and the SAME prefix computation the artifact search
-  // and the trace walk use (audit-F1 single implementation, D101 decision).
-  const { events, prefixLength } = verifiedPositionalPrefix(
-    exp,
-    chain.verified_from_sequence,
-    chain.verified_through_sequence,
-  );
-  const out: ChainSealVerdict[] = [];
   const invalidRow = (sequence: number | null, note: string): ChainSealVerdict => ({
     sequence_number: sequence,
     status: "invalid",
@@ -277,6 +267,25 @@ export async function verifyChainSeals(
     gen_time: null,
     note,
   });
+  if (seals == null || (Array.isArray(seals) && seals.length === 0)) return [];
+  // Library-caller symmetry (audit F4, 2026-08-05): a `chain_seals` that is
+  // PRESENT but not an array gets ONE declared invalid row, never a silent
+  // []. A malformed element inside an array already yields a declared row;
+  // returning nothing for the malformed container broke that contract on
+  // the public surface. (The CLI is unaffected: shape.ts refuses the
+  // document with exit 4 before this runs.)
+  if (!Array.isArray(seals)) {
+    return [invalidRow(null, "chain_seals present but not an array")];
+  }
+  const trustedFprs = trustedTsaFingerprints(tsaRegistry);
+  // The SAME sorted list and the SAME prefix computation the artifact search
+  // and the trace walk use (audit-F1 single implementation, D101 decision).
+  const { events, prefixLength } = verifiedPositionalPrefix(
+    exp,
+    chain.verified_from_sequence,
+    chain.verified_through_sequence,
+  );
+  const out: ChainSealVerdict[] = [];
   // deno-lint-ignore no-explicit-any
   for (const seal of seals as any[]) {
     let sequence: number | null = null;
