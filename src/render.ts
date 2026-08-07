@@ -22,6 +22,12 @@ import {
   type TraceEventRef,
   type TraceResult,
 } from "./trace.ts";
+import {
+  type DeclaredUnavailableEntry,
+  type DeclaredUnavailableReport,
+  UNAVAILABLE_KINDS,
+  UNAVAILABLE_NOTE,
+} from "./unavailable.ts";
 
 export type OverallResult =
   | "verified"
@@ -203,6 +209,90 @@ function propertyLines(properties: VerdictProperties): string[] {
   return lines;
 }
 
+/**
+ * Human-readable rendering of §8 rule 14 declarations (D105).
+ *
+ * Display cap on purpose (trap 8, "no silent caps"): a document may declare
+ * hundreds of omissions — a year-long range with the archive unreachable
+ * does — and the remainder is stated in words rather than dropped.
+ */
+const UNAVAILABLE_DISPLAY_CAP = 20;
+
+function unavailableEntryText(u: DeclaredUnavailableEntry): string {
+  // Defence in depth: these values passed the shape gate through the CLI, but
+  // renderHuman is a public function whose signature cannot express that.
+  const date = terminalSafe(String(u.anchor_date ?? "?"), 32);
+  const seq = typeof u.sequence_number === "number" && Number.isFinite(u.sequence_number)
+    ? String(u.sequence_number)
+    : "?";
+  switch (u.kind) {
+    case "ots_receipt":
+      return `the OTS receipt of the ${date} anchor`;
+    case "qualified_timestamp":
+      return `the qualified timestamp of the ${date} anchor`;
+    case "chain_seal":
+      return `the chain seal at sequence ${seq}`;
+  }
+}
+
+function unavailableLines(report: DeclaredUnavailableReport | null): string[] {
+  if (report === null) return [];
+  const { truncated } = report;
+  // A library caller can hand-build this report, and its `kind` would then be
+  // whatever that caller put there: an entry outside the closed enumeration
+  // is counted as unreadable rather than rendered as an empty description.
+  // (declaredUnavailableArtifacts can never produce one — this is the
+  // signature honouring what it promises, trap 11.)
+  const entries = report.entries.filter((u) =>
+    (UNAVAILABLE_KINDS as readonly string[]).includes(u.kind)
+  );
+  const unreadable = report.unreadable + (report.entries.length - entries.length);
+  if (entries.length === 0 && unreadable === 0 && truncated === 0) return [];
+
+  const lines: string[] = [""];
+  // Every line of this block names WHO is speaking. It is the producer of
+  // the document — possibly the adversary — describing its own export, and
+  // the reader must never be able to mistake it for something this verifier
+  // established. Nothing below moves the result or the exit code.
+  lines.push(
+    "Declared unavailable (SPEC §8 rule 14) — the producer of this document states that it could not include:",
+  );
+  for (const u of entries.slice(0, UNAVAILABLE_DISPLAY_CAP)) {
+    // A document that declares an artifact unavailable AND carries it is
+    // contradicting itself. Rule 14 makes that state impossible for an
+    // honest exporter and outcome-free for every verifier — but rendering it
+    // as a plain declaration would let a reader recycle it as an excuse for
+    // a proof that is present and FAILING. Name it instead.
+    lines.push(
+      `  [--] ${unavailableEntryText(u)}${
+        u.contradicted
+          ? " — yet this document carries it: the declaration is self-contradictory"
+          : ""
+      }`,
+    );
+  }
+  const hidden = Math.max(0, entries.length - UNAVAILABLE_DISPLAY_CAP);
+  if (hidden > 0) {
+    lines.push(`  [--] and ${hidden} more declared the same way (not shown)`);
+  }
+  if (truncated > 0) {
+    lines.push(
+      `  [--] the document declares ${truncated} further omissions this verifier did not read (over its cap)`,
+    );
+  }
+  if (unreadable > 0) {
+    // The F4 discipline: a present-but-unusable declaration is stated, never
+    // silently shortened away. Through the CLI this is unreachable — the
+    // shape gate exits 4 on such a document — so it speaks to library
+    // callers that skipped the gate.
+    lines.push(
+      `  [--] ${unreadable} declaration(s) in this document are not readable as §8 rule 14 entries and are ignored`,
+    );
+  }
+  lines.push(`Note: ${UNAVAILABLE_NOTE}.`);
+  return lines;
+}
+
 export function renderHuman(
   tenantId: string,
   chain: Verdict,
@@ -212,6 +302,10 @@ export function renderHuman(
   // On-demand chain seals (D104, additive): [] ⇒ no line at all — an export
   // without the field renders byte-identically to pre-1.5.
   chainSeals: ChainSealVerdict[] = [],
+  // Declared unavailable artifacts (D105, SPEC 1.6.0 §8 rule 14, additive):
+  // null ⇒ no block at all — a document without the array renders
+  // byte-identically to pre-1.6.
+  unavailable: DeclaredUnavailableReport | null = null,
 ): string {
   const lines: string[] = [];
   const eventCount =
@@ -326,9 +420,9 @@ export function renderHuman(
         // A seal whose genTime precedes the sealed event's reception proves
         // existence at its own genTime only — it must not read [OK].
         lines.push(
-          `[${
-            s.gen_time_consistent === false ? "WARN" : "OK"
-          }] Chain seal at sequence ${seq} — ${displaySafe(s.note)}.`,
+          `[${s.gen_time_consistent === false ? "WARN" : "OK"}] Chain seal at sequence ${seq} — ${
+            displaySafe(s.note)
+          }.`,
         );
         break;
       case "untrusted":
@@ -339,6 +433,8 @@ export function renderHuman(
         break;
     }
   }
+
+  lines.push(...unavailableLines(unavailable));
 
   lines.push("");
   lines.push(...propertyLines(properties));

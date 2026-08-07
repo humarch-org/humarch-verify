@@ -129,6 +129,32 @@ applies, with `-digest <event_hash recomputed at the sealed sequence>`. In
 `--json` output the verdicts appear as the additive top-level key
 `chain_seals`.
 
+**Declared unavailable artifacts (spec 1.6.0).** A proof artifact whose
+archived object the exporter cannot resolve is **omitted** from the export —
+defined behavior, and the same for the `.ots` receipt, the qualified
+timestamp and the chain seal (spec §8 rule 13). An export may additionally
+carry a top-level `unavailable_artifacts` array naming what was omitted
+(`{kind: "ots_receipt" | "qualified_timestamp", anchor_date}` /
+`{kind: "chain_seal", sequence_number}`, rule 14). The verifier prints those
+declarations as a `[--]` block that states **who is speaking**, and that is
+all it does with them: **a declaration is neither evidence nor an
+exemption.** It is an assertion by whoever produced the document about that
+producer's own operational state, and that producer may be the adversary —
+so an attacker who strips a genuine proof and adds the matching declaration
+obtains exactly the outcome of the plain absence. The result, the properties
+and the exit code are identical to those of the same document with the array
+removed (pinned by test), and an export without the array verifies
+byte-identically to pre-1.6. The converse holds too: the **absence** of a
+declaration asserts nothing, since an earlier exporter omits silently. A document that
+declares an artifact unavailable while carrying it anyway is contradicting
+itself: that changes no outcome either, and the block says so rather than
+letting the declaration be recycled as an excuse for a proof that is present
+and failing. In
+`--json` output the block appears as the additive top-level key
+`declared_unavailable`. Malformed declarations — a repeated coordinate, an
+unknown `kind`, a coordinate of the wrong shape or one that does not belong
+to its kind — are malformed input (exit 4).
+
 **Artifact search (spec 1.4.0).** `--find-artifact <sha256-hex>` lists the
 events whose payload **declares** the given hash as a string value anywhere
 (an `external_refs[].artifact_sha256`, a `message_id_sha256`, a

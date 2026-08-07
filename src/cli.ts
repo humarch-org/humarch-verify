@@ -8,8 +8,9 @@
 // Exit codes (D65 + 2026-07-12 amendment): 0 verified · 2 chain/signatures
 // invalid · 3 anchor/OTS not verified · 4 malformed input · 5 declared
 // partial verification · 6 keys not attributed to a trusted issuer.
-// The qualified-timestamp check (D98), the --find-artifact search (D100)
-// and the --trace ancestry walk (D101) are ADDITIVE: they never change these.
+// The qualified-timestamp check (D98), the --find-artifact search (D100),
+// the --trace ancestry walk (D101) and the declared-unavailable block (D105)
+// are ADDITIVE: they never change these.
 import { verifyChain } from "./verify.ts";
 import { type OtsLevel, verifyAnchors, verifyChainSeals } from "./ots.ts";
 import {
@@ -23,6 +24,7 @@ import {
 import { findArtifact, isArtifactTarget } from "./find.ts";
 import { ANCESTRY_NOTE, ANCESTRY_SEMANTICS, isTraceTarget, traceAncestry } from "./trace.ts";
 import { exportShapeProblems } from "./shape.ts";
+import { declaredUnavailableArtifacts } from "./unavailable.ts";
 import {
   attributeEvents,
   EMBEDDED_ISSUER,
@@ -263,6 +265,13 @@ async function main(): Promise<void> {
   // fields.
   const chainSeals = await verifyChainSeals(exp, chain, tsaRegistry);
 
+  // Declared unavailable artifacts (D105, SPEC 1.6.0 §8 rule 14), AFTER
+  // assess and with no hand on exitCode: a declaration is the producer's
+  // statement about its own export, never evidence and never an exemption —
+  // this document and the same document with the array removed MUST reach
+  // the same result and the same exit code. Nothing is verified here.
+  const unavailable = declaredUnavailableArtifacts(exp);
+
   // Informative search (D100), AFTER assess and with no hand on exitCode:
   // exit neutrality is the invariant that keeps "one verification routine".
   const artifactSearch = findTarget !== null
@@ -312,6 +321,10 @@ async function main(): Promise<void> {
         ots_level: otsLevel,
         // Additive top-level keys: chain/anchors/properties/result untouched.
         ...(chainSeals.length ? { chain_seals: chainSeals } : {}),
+        ...(unavailable !== null &&
+            (unavailable.entries.length || unavailable.unreadable || unavailable.truncated)
+          ? { declared_unavailable: unavailable }
+          : {}),
         ...(artifactSearch !== null ? { artifact_search: artifactSearch } : {}),
         ...(ancestry !== null ? { ancestry } : {}),
       },
@@ -319,7 +332,9 @@ async function main(): Promise<void> {
       2,
     )));
   } else {
-    console.log(renderHuman(exp.tenant_id, chain, anchors, result, properties, chainSeals));
+    console.log(
+      renderHuman(exp.tenant_id, chain, anchors, result, properties, chainSeals, unavailable),
+    );
     if (artifactSearch !== null) {
       console.log(renderArtifactSearch(
         artifactSearch.target,

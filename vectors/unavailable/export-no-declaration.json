@@ -1,0 +1,131 @@
+{
+  "format": "humarch-export/v1",
+  "generated_at": "2026-07-06T15:17:54.686611Z",
+  "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+  "range": {
+    "from_sequence": 1,
+    "to_sequence": 3
+  },
+  "genesis_note": "prev_hash of sequence 1 = sha256('humarch:genesis:' + tenant_id), see humarch-spec",
+  "signing_keys": [
+    {
+      "signing_key_id": "ed25519:dc5578a147d359bf",
+      "algorithm": "ed25519",
+      "public_key": "efddcd5a449c0efbc6dcef4c9e951129fc70bad24cf9515b700ce70cd70f677f",
+      "created_at": "2026-07-06T11:08:46.425645Z",
+      "retired_at": null
+    }
+  ],
+  "events": [
+    {
+      "event_id": "25288676-eaa4-4d7d-a616-2c887f45b17b",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 1,
+      "received_at": "2026-07-06T12:04:58.583985Z",
+      "occurred_at": "2026-07-06T12:04:58.583985Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 1,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "75a4c8834ed2449336fed490ffbb31b1f1c69c799a386c947df32230a5e1f180",
+      "prev_hash": "894084694a46e9dfb87d90eaf787b087c8b57dec0f213ab97759835a61aada5d",
+      "event_hash": "da328f04e6c823c4251b7626d69ebb3840a2fb900aada644a9ee5e149e0b463a",
+      "signature": "c9c6d49371ad662ceda46895f8ab031d0bc88738b476204188ed91a7c8523fda9f1506581d36e1b0f091b89fa7952dcffb88cf659388cbcdb58e053d3e5d7408",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    },
+    {
+      "event_id": "7f6e7e39-9bff-46ae-bc10-dcd469693888",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 2,
+      "received_at": "2026-07-06T12:04:58.784689Z",
+      "occurred_at": "2026-07-06T12:04:58.784689Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 2,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "77344fdcb3578c18dd809b033b198407b7f1794c80e4e99c88f776843a584ae5",
+      "prev_hash": "da328f04e6c823c4251b7626d69ebb3840a2fb900aada644a9ee5e149e0b463a",
+      "event_hash": "67a18a7c64c8060f5d28ac57b58e5838034fe14df7b264b4962a6fc34ab581c2",
+      "signature": "13b09660d2b2b7c237cbbf8759215e5ffc825acf6e7e42af4b54c8152c7755b0641e71956592b34c966805baae1e270a1cb6dfdbf9699a51c5d6265e00f56105",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    },
+    {
+      "event_id": "f39ce817-d6f9-43cd-b431-57a4bf550907",
+      "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+      "sequence_number": 3,
+      "received_at": "2026-07-06T12:04:58.868613Z",
+      "occurred_at": "2026-07-06T12:04:58.868613Z",
+      "source": "generic",
+      "event_type": "agent_action",
+      "actor": {
+        "id": "phase2-gate-agent",
+        "type": "agent"
+      },
+      "subject": {
+        "workflow": {
+          "ref": "phase2-first-run"
+        },
+        "end_client": {
+          "ref": "dev-client"
+        }
+      },
+      "payload": {
+        "n": 3,
+        "action": "anchor-gate-step"
+      },
+      "payload_hash": "7ecec0a1245a2fad7ee6ad81a82f645ba16f26b10bf3bbdeca3b31071a70e461",
+      "prev_hash": "67a18a7c64c8060f5d28ac57b58e5838034fe14df7b264b4962a6fc34ab581c2",
+      "event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f",
+      "signature": "2334188a9ce4bf1323cd82e9f25f9ce714f0da872840ccb48100b86d4e250a127617de9158e15cc7de9340d800f6de5ecd9c80db3ccccbfb7a24c615484c490b",
+      "signing_key_id": "ed25519:dc5578a147d359bf"
+    }
+  ],
+  "anchors": [
+    {
+      "anchor_date": "2026-07-06",
+      "aggregate_hash": "ee78becb1ac2a1d07aea0b1e32a326d6df410f52adc77d760893541991409290",
+      "ots_status": "confirmed",
+      "ots_btc_block": 956916,
+      "entry": {
+        "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+        "last_event_id": "f39ce817-d6f9-43cd-b431-57a4bf550907",
+        "last_event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f",
+        "last_sequence_number": 3
+      },
+      "anchor_entries_for_aggregate": [
+        {
+          "tenant_id": "384f0aa7-10d0-4ace-89fc-1cdb3b3b6ae5",
+          "last_event_hash": "49a29a1a4e20c5dabac05e989eae587934bcb8eafe6a697ebc5a99deff416e1f"
+        }
+      ]
+    }
+  ]
+}

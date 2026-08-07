@@ -421,5 +421,75 @@ export function exportShapeProblems(value: unknown): string[] {
     }
   }
 
+  // Declared unavailable artifacts (D105, SPEC 1.6.0 §8 rule 14): OPTIONAL
+  // top-level array — the gate stays additive (its absence is the pre-1.6
+  // form). The array carries no proof and moves no verdict, so the checks
+  // below are purely about FORM, rule-8 class: a closed `kind` enumeration,
+  // one coordinate belonging to that kind, and no repeated (kind,
+  // coordinate) pair — an artifact cannot be missing twice, and a repetition
+  // is the same decoy-riding shape refused on event ids and sealed
+  // sequences. The declared ORDERING is deliberately NOT checked: rule 14
+  // binds exporters only there (rule-4 class), and refusing a document over
+  // the order of a list that proves nothing would be a self-inflicted denial
+  // of verification.
+  if (exp.unavailable_artifacts != null) {
+    if (!Array.isArray(exp.unavailable_artifacts)) {
+      problems.push("unavailable_artifacts: expected an array");
+    } else {
+      const seenDeclarations = new Set<string>();
+      // deno-lint-ignore no-explicit-any
+      exp.unavailable_artifacts.forEach((u: any, i: number) => {
+        const at = `unavailable_artifacts[${i}]`;
+        if (!isObject(u)) {
+          problems.push(`${at}: expected an object`);
+          return;
+        }
+        const anchorKind = u.kind === "ots_receipt" || u.kind === "qualified_timestamp";
+        if (!anchorKind && u.kind !== "chain_seal") {
+          problems.push(
+            `${at}.kind: expected "ots_receipt", "qualified_timestamp" or "chain_seal"`,
+          );
+          return;
+        }
+        let coordinate: string;
+        if (anchorKind) {
+          // A seal's coordinate on an anchor artifact (or the reverse below)
+          // is a declaration nobody can act on: refuse the pairing, not just
+          // the members, which are individually well-formed.
+          if ("sequence_number" in u) {
+            problems.push(`${at}.sequence_number: an ${u.kind} is declared by anchor_date`);
+            return;
+          }
+          if (typeof u.anchor_date !== "string" || !DATE_YMD.test(u.anchor_date)) {
+            problems.push(`${at}.anchor_date: expected a YYYY-MM-DD date`);
+            return;
+          }
+          coordinate = u.anchor_date;
+        } else {
+          if ("anchor_date" in u) {
+            problems.push(`${at}.anchor_date: a chain_seal is declared by sequence_number`);
+            return;
+          }
+          if (
+            !Number.isInteger(u.sequence_number) || (u.sequence_number as number) < 1 ||
+            (u.sequence_number as number) > Number.MAX_SAFE_INTEGER
+          ) {
+            problems.push(`${at}.sequence_number: expected a positive integer`);
+            return;
+          }
+          coordinate = String(u.sequence_number);
+        }
+        const key = `${u.kind}|${coordinate}`;
+        if (seenDeclarations.has(key)) {
+          problems.push(
+            `${at}: duplicate declaration (an artifact cannot be unavailable twice, §8 rule 14)`,
+          );
+        } else {
+          seenDeclarations.add(key);
+        }
+      });
+    }
+  }
+
   return problems;
 }
