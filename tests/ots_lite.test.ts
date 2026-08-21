@@ -459,3 +459,125 @@ Deno.test("explorer seam: duplicate bitcoin heights are fetched once per explore
     assert(heightHits.length <= 2, `expected at most 2 height lookups, saw ${heightHits.length}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// BT-20 (2026-08-21) — evaluateOps used to copy the whole accumulated buffer
+// on every append/prepend, so a run of n concatenations cost O(n²) bytes
+// copied. Measured on a 979 232-byte receipt (under MAX_RECEIPT_BYTES, so
+// nothing refused it): 16 heights x 4096 appends = 25 011 ms, and halving the
+// input gave 2 715 ms — 9.2x for 2x input. A hundred anchors of that shape is
+// ~40 minutes of CPU, while README's "Limits" claimed linear cost. The byte
+// caps bounded SIZE and never bounded WORK.
+// ---------------------------------------------------------------------------
+
+/** The pre-BT-20 implementation, kept as the equivalence oracle. */
+async function naiveEvaluateOps(
+  digest: Uint8Array,
+  // deno-lint-ignore no-explicit-any
+  ops: any[],
+): Promise<Uint8Array> {
+  let cur = digest;
+  for (const o of ops) {
+    if (o.op === "append") {
+      const x = new Uint8Array(cur.length + o.operand.length);
+      x.set(cur);
+      x.set(o.operand, cur.length);
+      cur = x;
+    } else if (o.op === "prepend") {
+      const x = new Uint8Array(cur.length + o.operand.length);
+      x.set(o.operand);
+      x.set(cur, o.operand.length);
+      cur = x;
+    } else if (o.op === "sha256") {
+      cur = new Uint8Array(await crypto.subtle.digest("SHA-256", cur as BufferSource));
+    } else if (o.op === "sha1") {
+      cur = new Uint8Array(await crypto.subtle.digest("SHA-1", cur as BufferSource));
+    }
+  }
+  return cur;
+}
+
+const toHex = (b: Uint8Array) =>
+  Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+Deno.test("BT-20: the rope evaluation is byte-identical to the naive one", async () => {
+  // Randomized differential test rather than a handful of shapes: the risk in
+  // this rewrite is ORDER (a prepend list applied forwards instead of
+  // backwards), and order bugs hide from any fixed example that happens not to
+  // mix the two operations around a hash.
+  const rnd = (n: number) => crypto.getRandomValues(new Uint8Array(n));
+  let seed = 1;
+  const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (let t = 0; t < 120; t++) {
+    // deno-lint-ignore no-explicit-any
+    const ops: any[] = [];
+    const n = 1 + Math.floor(rand() * 24);
+    for (let i = 0; i < n; i++) {
+      const r = rand();
+      ops.push(
+        r < 0.4
+          ? { op: "append", operand: rnd(1 + Math.floor(rand() * 8)) }
+          : r < 0.8
+          ? { op: "prepend", operand: rnd(1 + Math.floor(rand() * 8)) }
+          : r < 0.9
+          ? { op: "sha256" }
+          : { op: "sha1" },
+      );
+    }
+    const d = rnd(32);
+    assertEquals(
+      toHex(await evaluateOps(d, ops)),
+      toHex(await naiveEvaluateOps(d, ops)),
+      `sequence ${t} diverged: ${ops.map((o) => o.op).join(",")}`,
+    );
+  }
+});
+
+Deno.test("BT-20: concatenation cost is linear, not quadratic", async () => {
+  // A ratio test, not a wall-clock threshold: absolute timings are a property
+  // of the machine, the doubling behaviour is a property of the algorithm.
+  // Quadratic growth showed 9.2x for 2x input; linear shows ~2x. The bar is
+  // set at 4x so ordinary scheduler noise cannot fail an honest build, while
+  // any return of the O(n²) copy fails it decisively.
+  const rnd = (n: number) => crypto.getRandomValues(new Uint8Array(n));
+  const run = async (k: number): Promise<number> => {
+    // deno-lint-ignore no-explicit-any
+    const ops: any[] = [];
+    for (let h = 0; h < 8; h++) {
+      for (let i = 0; i < k; i++) ops.push({ op: "append", operand: rnd(16) });
+      ops.push({ op: "sha256" });
+    }
+    const digest = rnd(32);
+    await evaluateOps(digest, ops); // warm
+    const t0 = performance.now();
+    await evaluateOps(digest, ops);
+    return performance.now() - t0;
+  };
+  const small = await run(2048);
+  const large = await run(4096);
+  const ratio = large / Math.max(small, 0.5);
+  assert(
+    ratio < 4,
+    `doubling the operation count multiplied the time by ${
+      ratio.toFixed(1)
+    }x (${small.toFixed(0)}ms -> ${large.toFixed(0)}ms); linear is ~2x, the ` +
+      `pre-BT-20 quadratic copy was 9.2x`,
+  );
+});
+
+Deno.test("BT-20: the buffer cap still fires on a rope that is never materialized", async () => {
+  // The cap used to be checked against `cur.length`, a value that existed
+  // because every step materialized. It is now checked against the running
+  // total of an unmaterialized rope: if that accounting were dropped, a
+  // hostile receipt could grow past the ceiling without ever allocating, and
+  // the ceiling would be gone precisely when it matters.
+  const ops = Array.from(
+    { length: 5 },
+    () => ({ op: "append" as const, operand: new Uint8Array(1 << 20) }),
+  );
+  await assertRejects(
+    () => evaluateOps(new Uint8Array(32), ops),
+    OtsParseError,
+    "evaluation buffer cap exceeded",
+  );
+});

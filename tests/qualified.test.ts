@@ -19,7 +19,7 @@ import {
 } from "../src/tst_lite.ts";
 import { verifyAnchors } from "../src/ots.ts";
 import { aggregateHash, verifyChain } from "../src/verify.ts";
-import { assess, renderHuman } from "../src/render.ts";
+import { assess, qualifiedMarkBindsChainHead, renderHuman } from "../src/render.ts";
 import { attributeEvents, trustedKeyBytes } from "../src/issuer.ts";
 import { exportShapeProblems } from "../src/shape.ts";
 
@@ -234,6 +234,14 @@ Deno.test("render: one additive line per anchor, aggregate semantics, no forbidd
     valid.anchors,
     valid.result,
     valid.properties,
+    [],
+    null,
+    // BT-07 weak analogue: the presumption note claims that events of THIS
+    // export inherit the anteriority, so it is earned only when the marked
+    // aggregate actually commits to this chain's head. This vector's anchor
+    // does bind - its entry set names (this tenant, this head) - which is why
+    // the note below is legitimate here.
+    qualifiedMarkBindsChainHead(valid.exp, valid.chain, valid.anchors),
   );
   assertStringIncludes(human, "[OK] Qualified timestamp of 2026-07-27 — valid · Humarch Test TSA");
   assertStringIncludes(
@@ -305,4 +313,78 @@ Deno.test("shape: qualified_timestamp is optional, validated when present", () =
   const exp2 = readJson("export-qualified.json");
   exp2.anchors[0].qualified_timestamp = "a string";
   assert(exportShapeProblems(exp2).some((p: string) => p.includes("expected an object")));
+});
+
+// ---------------------------------------------------------------------------
+// BT-07 weak analogue (2026-08-21). The presumption note says that "every
+// event verifiably contained in it inherits that anteriority". Until v1.7
+// nothing checked that any event of THIS export was contained in the marked
+// aggregate: a genuine qualified mark, lifted from a published export and
+// grafted onto a fabricated chain, bought that chain an eIDAS sentence.
+// ---------------------------------------------------------------------------
+Deno.test("BT-07: a VALID qualified mark that does not bind this chain earns no presumption note", async () => {
+  const valid = await fullRun("export-qualified-today.json", true, true);
+  assert(
+    qualifiedMarkBindsChainHead(valid.exp, valid.chain, valid.anchors),
+    "precondition: the shipped vector does bind, so the negative below is a real change",
+  );
+
+  // Lift the mark onto a chain it says nothing about: keep the anchor, the
+  // token and the whole verdict, and change only WHICH head the committed
+  // entry names. Nothing about the token's own validity moves — this is the
+  // attacker's cheapest edit, and the one the old gate could not see.
+  const lifted = structuredClone(valid.exp);
+  for (const a of lifted.anchors ?? []) {
+    for (const e of a.anchor_entries_for_aggregate ?? []) {
+      e.last_event_hash = "0".repeat(64);
+    }
+  }
+  assertEquals(
+    qualifiedMarkBindsChainHead(lifted, valid.chain, valid.anchors),
+    false,
+    "an aggregate that commits to another chain's head must not bind",
+  );
+
+  const human = renderHuman(
+    lifted.tenant_id,
+    valid.chain,
+    valid.anchors,
+    valid.result,
+    valid.properties,
+    [],
+    null,
+    qualifiedMarkBindsChainHead(lifted, valid.chain, valid.anchors),
+  );
+  // The per-anchor line still reports the token honestly: it IS a valid token.
+  assertStringIncludes(human, "[OK] Qualified timestamp of 2026-07-27 — valid");
+  // What it must not do is claim this export inherits anything from it.
+  assert(
+    !human.includes("art. 42 presumption"),
+    "a mark that binds no event of this export must not print the presumption note",
+  );
+});
+
+Deno.test("BT-07: the qualified binding reads the committed entries, never the convenience `entry`", () => {
+  // SPEC §8.1 class 3: no aggregate commits to `anchors[].entry`, so binding
+  // to it would be binding to a field the attacker writes for free.
+  const exp = {
+    tenant_id: "t1",
+    events: [{ sequence_number: 1, event_hash: "aa".repeat(32) }],
+    anchors: [{
+      anchor_date: "2026-07-06",
+      entry: { tenant_id: "t1", last_event_hash: "aa".repeat(32) },
+      anchor_entries_for_aggregate: [{ tenant_id: "t1", last_event_hash: "bb".repeat(32) }],
+    }],
+  };
+  const chain = { verified_through_sequence: 1 } as never;
+  const anchors = [{
+    anchor_date: "2026-07-06",
+    aggregate_recomputed: true,
+    qualified_timestamp: { status: "valid", gen_time_consistent: true },
+  }] as never;
+  assertEquals(
+    qualifiedMarkBindsChainHead(exp, chain, anchors),
+    false,
+    "`entry` naming the head must not bind when the committed set does not",
+  );
 });

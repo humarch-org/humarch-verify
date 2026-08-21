@@ -97,7 +97,26 @@ function checkFinite(problems: string[], path: string, root: unknown): void {
   const seen = new WeakSet<object>();
   let budget = 2_000_000;
   while (stack.length > 0) {
-    if (budget-- <= 0) return;
+    // BT-36 (2026-08-21). This used to `return` silently on exhaustion, which
+    // broke the repo's own "no silent caps" discipline in the one place it
+    // mattered most: the exhausted walk reports NO non-finite number, so a
+    // `1e999` planted past the budget flowed on to verifyChain, where
+    // canonicalize() threw — and at the CLI that surfaced as exit 1 with a
+    // stack trace instead of the contractual exit 4. An automation mapping
+    // exit 4 to "reject" was therefore steerable by document size alone
+    // (reproduced with a 4.2 MB document).
+    //
+    // Reaching the cap is now itself a form error. It is fail-closed and it
+    // costs nothing honest: a genuine export never comes near two million
+    // nodes in one container, and SPEC §8.1 class 6 requires a verifier to
+    // report a document that exceeds a bound rather than truncate the check.
+    if (budget-- <= 0) {
+      problems.push(
+        `${path}: too large to check for non-finite numbers ` +
+          `(over 2000000 nodes in one container)`,
+      );
+      return;
+    }
     const [p, v] = stack.pop() as [string, unknown];
     if (typeof v === "number") {
       if (!Number.isFinite(v)) {
@@ -489,6 +508,25 @@ export function exportShapeProblems(value: unknown): string[] {
         }
       });
     }
+  }
+
+  // SPEC §8.1 class 8 (v1.7): the non-finite refusal is NOT scoped to
+  // actor/subject/payload. It used to be — the deep walk above runs on those
+  // three containers only — which left every other position outside the letter
+  // of the rule, `sequence_number: 1e999` among them: exactly the input the
+  // rule exists for. Some of those positions happened to be caught by a
+  // neighbouring type check; "happened to be" is not a gate, and a rule a
+  // third party can only follow by also memorizing where it does not apply is
+  // not one either.
+  //
+  // Runs LAST, and only when the precise walks found nothing. Order is the
+  // whole design here: the per-container walks name `events[3].payload`, this
+  // one can only say `export.<member 6>[0]`, and the CLI displays the FIRST
+  // problem. Running this first would have quietly downgraded every existing
+  // diagnostic to the opaque form — the F5 remedy's precision, undone as a
+  // side effect of a coverage fix.
+  if (!problems.some((p) => p.includes("non-finite"))) {
+    checkFinite(problems, "export", exp);
   }
 
   return problems;

@@ -69,9 +69,22 @@ jobs:
       - name: "guard: the RFC 8032 test key never enters the embedded issuer (D82)"
         run: |
           ! grep -q "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" src/issuer.ts
+      # BT-47 / GO-LIVE B.9 (2026-08-21): the cross-repo gates compare this
+      # repository's vectors and key registry against humarch-spec's. They are
+      # the checks whose ABSENCE was the finding, so they must actually run
+      # here - tests/cross_repo.test.ts FAILS rather than skips when the
+      # sibling is missing, and this is what puts it there. Pinned to the
+      # published spec repository, so a spec release that moves a shared vector
+      # turns this repository red until it is re-synced: that coupling is the
+      # point, and it is why releases go spec first, then verify.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: humarch-org/humarch-spec
+          path: .sibling/humarch-spec
       - name: tests (vectors, golden exports, OTS interop vs official client)
         run: deno task test
         env:
+          HUMARCH_SPEC_DIR: ${{ github.workspace }}/.sibling/humarch-spec
           HUMARCH_REQUIRE_OTS: "1"
           HUMARCH_INTEROP_NET: ${{ inputs.interop_net && '1' || '' }}
       - name: build standalone binaries (D62)

@@ -208,13 +208,23 @@ export function findArtifact(
   const matches: ArtifactMatch[] = [];
   const { events, prefixLength } = verifiedPositionalPrefix(exp, verifiedFrom, verifiedThrough);
 
+  // BT-37 (2026-08-21). The module contract above says accessors are never
+  // invoked, and `verifiedPositionalPrefix` was hardened for it in the F3
+  // remedy — but these five reads were left as plain property accesses, so on
+  // an object graph carrying getters exactly five of them ran. On the CLI path
+  // the input is JSON.parse output, which has no accessors, so nothing was
+  // exploitable; the defect was the FALSE CLAIM, and a caller who believed it
+  // and handed this exported function a live object graph got arbitrary code
+  // execution the documentation had ruled out. Reads are now descriptor-only,
+  // like the rest of the walk, which makes the contract true instead of
+  // narrowing it.
   events.forEach((ev, index) => {
-    if (!payloadDeclares(ev?.payload, targetLower)) return;
+    if (!payloadDeclares(ownDataProp(ev, "payload"), targetLower)) return;
     matches.push({
-      event_id: String(ev.event_id),
-      event_type: String(ev.event_type),
-      sequence_number: Number(ev.sequence_number),
-      occurred_at: String(ev.occurred_at),
+      event_id: String(ownDataProp(ev, "event_id")),
+      event_type: String(ownDataProp(ev, "event_type")),
+      sequence_number: Number(ownDataProp(ev, "sequence_number")),
+      occurred_at: String(ownDataProp(ev, "occurred_at")),
       within_verified_range: index < prefixLength,
     });
   });

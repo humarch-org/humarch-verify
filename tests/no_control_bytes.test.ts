@@ -22,7 +22,19 @@ const TEXT_EXT = new Set([
   ".gitignore", ".gitattributes", ".editorconfig",
 ]);
 // Dependency/build/tool output: generated, never reviewed or grep-gated.
-const SKIP_DIR = new Set(["node_modules", "dist", ".git", ".astro", ".netlify", ".temp"]);
+// `.sibling` holds the humarch-spec checkout the cross-repo gates compare
+// against (CI, BT-47). It is another repository's tree: it has its own guard
+// and is not this repository's to police - scanning it here would report
+// findings nobody can fix from this repo.
+const SKIP_DIR = new Set([
+  "node_modules",
+  "dist",
+  ".git",
+  ".astro",
+  ".netlify",
+  ".temp",
+  ".sibling",
+]);
 
 // `import.meta.url` keeps the root correct regardless of where the repo is
 // checked out (CI included).

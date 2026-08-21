@@ -273,3 +273,36 @@ Deno.test("F5 (external audit 2026-08-03): non-finite diagnostics never echo pay
   assertStringIncludes(finite2[0], "events[0].actor");
   assert(!finite2[0].includes("hostile"), `actor key leaked: ${finite2[0]}`);
 });
+
+Deno.test("SPEC 1.7 §8.1 class 8: a non-finite number is refused ANYWHERE, not only in the three containers", () => {
+  // The rule used to be scoped to actor/subject/payload, so a non-finite
+  // number elsewhere in the document sat outside its letter. Some positions
+  // were caught by a neighbouring type check and some were not; either way a
+  // rule that must be read together with a list of the places it does not
+  // cover is not a rule a third-party implementer can follow.
+  const base = () => load("export-v2v3.json");
+  for (
+    const plant of [
+      (e: Record<string, unknown>) => {
+        (e.range as Record<string, unknown>).from_sequence = Infinity;
+      },
+      (e: Record<string, unknown>) => {
+        e.some_future_member = { nested: [1, -Infinity] };
+      },
+      (e: Record<string, unknown>) => {
+        (e.anchors as Record<string, unknown>[])[0].ots_btc_block = NaN;
+      },
+    ]
+  ) {
+    const exp = base();
+    plant(exp);
+    const problems = exportShapeProblems(exp);
+    assert(
+      problems.some((p) => p.includes("non-finite")),
+      `a non-finite number was not reported: ${JSON.stringify(problems.slice(0, 3))}`,
+    );
+  }
+  // And the golden export, which has none, still passes cleanly: the
+  // generalization must not start refusing honest documents.
+  assertEquals(exportShapeProblems(base()), []);
+});

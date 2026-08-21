@@ -46,6 +46,92 @@ export interface VerdictProperties {
 }
 
 /**
+ * The chain-head of the verified prefix, or null when there is no single
+ * unambiguous one. Factored out of anchorBindsChainHead (BT-07, 2026-08-21)
+ * because the SAME entry check governs every claim this verifier makes about
+ * a day's proof covering THIS export — the OTS coverage note and the eIDAS
+ * presumption note alike. Two copies of the check would be one copy and one
+ * eventual divergence.
+ */
+function verifiedHead(
+  // deno-lint-ignore no-explicit-any
+  exp: any,
+  chain: Verdict,
+): { tenant: string; head: string } | null {
+  if (chain.verified_through_sequence === null) return null;
+  // The head is resolved BY SEQUENCE NUMBER — the one inference SPEC §8
+  // rule 10 tells consumers not to make. It is sound only while the number
+  // identifies exactly one event, so refuse when it does not (adversarial
+  // review 2026-08-02): shape.ts already rejects duplicate sequence numbers,
+  // and a library caller that skipped it must not get a time property
+  // resolved against an attacker-chosen twin.
+  // deno-lint-ignore no-explicit-any
+  const candidates = (exp.events ?? []).filter((e: any) =>
+    e.sequence_number === chain.verified_through_sequence
+  );
+  if (candidates.length !== 1) return null;
+  const headEvent = candidates[0];
+  if (typeof headEvent?.event_hash !== "string") return null;
+  return {
+    tenant: String(exp.tenant_id ?? "").toLowerCase(),
+    head: headEvent.event_hash.toLowerCase(),
+  };
+}
+
+/**
+ * Does THIS anchor element commit — through the entry set its aggregate is
+ * recomputed from — to (this export's tenant, the recomputed chain head)?
+ *
+ * Reads `anchor_entries_for_aggregate`, never the convenience `entry` field:
+ * no aggregate commits to `entry` (SPEC §8.1 class 3).
+ */
+function entryCommitsToHead(
+  // deno-lint-ignore no-explicit-any
+  element: any,
+  bound: { tenant: string; head: string },
+): boolean {
+  // deno-lint-ignore no-explicit-any
+  return (element?.anchor_entries_for_aggregate ?? []).some((e: any) =>
+    String(e?.tenant_id ?? "").toLowerCase() === bound.tenant &&
+    String(e?.last_event_hash ?? "").toLowerCase() === bound.head
+  );
+}
+
+/**
+ * Whether any anchor carrying a VALID qualified timestamp also binds this
+ * chain's head (BT-07 weak analogue). The eIDAS art. 42 presumption attaches
+ * to the marked data — the daily aggregate — and an event inherits anteriority
+ * only by being verifiably contained in that aggregate. A valid mark on an
+ * aggregate this export is not part of grants this export nothing, so the
+ * presumption sentence must not be printed for it.
+ *
+ * Deliberately NOT gated on the OTS preconditions: the two proofs share the
+ * hash, not the failure modes (SPEC §7.1), so a day whose `.ots` is still
+ * pending can carry a perfectly good qualified mark.
+ */
+export function qualifiedMarkBindsChainHead(
+  // deno-lint-ignore no-explicit-any
+  exp: any,
+  chain: Verdict,
+  anchors: AnchorVerdict[],
+): boolean {
+  const bound = verifiedHead(exp, chain);
+  if (bound === null) return false;
+  // deno-lint-ignore no-explicit-any
+  const src = (exp.anchors ?? []) as any[];
+  return anchors.some((a, i) => {
+    if (
+      a.qualified_timestamp?.status !== "valid" ||
+      a.qualified_timestamp?.gen_time_consistent === false ||
+      !a.aggregate_recomputed
+    ) return false;
+    const el = src[i];
+    if (!el || el.anchor_date !== a.anchor_date) return false;
+    return entryCommitsToHead(el, bound);
+  });
+}
+
+/**
  * Chain↔anchor binding (audit F1, M3.1): true iff at least one CONFIRMED,
  * Bitcoin-verified, time-consistent anchor carries — among the entries its
  * recomputed aggregate commits to — the pair (export tenant_id, event_hash
@@ -54,7 +140,10 @@ export interface VerdictProperties {
  * anchor check would pass while proving nothing about THESE events.
  * The binding reads `anchor_entries_for_aggregate` (committed by the
  * aggregate the .ots attests), never the convenience `entry` field (not
- * committed by anything).
+ * committed by anything). SPEC §7 states this as a normative clause since
+ * v1.7.0 (BT-01): before then the recipe asked only for internal coherence,
+ * and a third party implementing it faithfully built a verifier this attack
+ * defeated.
  *
  * W3 (audit 3, reclassified 2026-07-19): verdicts and source elements are
  * coupled BY INDEX — verifyAnchors emits exactly one verdict per element of
@@ -74,22 +163,8 @@ export function anchorBindsChainHead(
   chain: Verdict,
   anchors: AnchorVerdict[],
 ): boolean {
-  if (chain.verified_through_sequence === null) return false;
-  // The head is resolved BY SEQUENCE NUMBER — the one inference SPEC §8
-  // rule 10 tells consumers not to make. It is sound only while the number
-  // identifies exactly one event, so refuse to bind when it does not
-  // (adversarial review 2026-08-02): shape.ts already rejects duplicate
-  // sequence numbers, and a library caller that skipped it must not get a
-  // time property resolved against an attacker-chosen twin.
-  // deno-lint-ignore no-explicit-any
-  const candidates = (exp.events ?? []).filter((e: any) =>
-    e.sequence_number === chain.verified_through_sequence
-  );
-  if (candidates.length !== 1) return false;
-  const headEvent = candidates[0];
-  if (typeof headEvent?.event_hash !== "string") return false;
-  const head = headEvent.event_hash.toLowerCase();
-  const tenant = String(exp.tenant_id ?? "").toLowerCase();
+  const bound = verifiedHead(exp, chain);
+  if (bound === null) return false;
   // deno-lint-ignore no-explicit-any
   const src = (exp.anchors ?? []) as any[];
   return anchors.some((a, i) => {
@@ -104,11 +179,7 @@ export function anchorBindsChainHead(
     // and refuses to bind rather than risk binding the wrong element.
     const el = src[i];
     if (!el || el.anchor_date !== a.anchor_date) return false;
-    // deno-lint-ignore no-explicit-any
-    return (el.anchor_entries_for_aggregate ?? []).some((e: any) =>
-      String(e?.tenant_id ?? "").toLowerCase() === tenant &&
-      String(e?.last_event_hash ?? "").toLowerCase() === head
-    );
+    return entryCommitsToHead(el, bound);
   });
 }
 
@@ -120,7 +191,7 @@ export function assess(
   attribution: Attribution,
 ): { result: OverallResult; exitCode: number; properties: VerdictProperties } {
   const integrityOk = chain.chain_continuous && chain.signatures_valid;
-  const anchorFailed = anchors.some((a) =>
+  const someAnchorFailed = anchors.some((a) =>
     !a.aggregate_recomputed ||
     a.ots_commits_to_aggregate === false ||
     a.bitcoin_verified === false ||
@@ -129,10 +200,33 @@ export function assess(
     // LATER existence — never the claimed day.
     a.time_consistent === false
   );
-  const time: TimeStatus = anchorFailed
-    ? "failed"
-    : anchorBindsChainHead(exp, chain, anchors)
+  // BT-06 (2026-08-21). `anchors` is an unsigned array the document's producer
+  // chooses freely, and `some()` over it used to decide the verdict outright:
+  // appending one junk element flipped a GENUINE export to anchor_failed
+  // (exit 3). That is a denial of verification anyone could mount on anyone
+  // else's evidence, with no keys — the mirror image of BT-01(a), where the
+  // same array was trusted in the other direction.
+  //
+  // The time property is derived from the existence of a BINDING anchor
+  // (SPEC §7): one that commits to this chain's recomputed head. Failures of
+  // elements that bind nothing cannot manufacture a verdict.
+  //
+  // The exit-3 verdict is kept where it is still the honest answer: nothing
+  // binds AND something failed. Dropping that guard would let a real
+  // evidentiary degradation — an attestation whose block time contradicts its
+  // declared day — slide silently into the milder exit 5, which is what
+  // tests/anchor_time.test.ts guards (D64 amendment). Residue, stated: when a
+  // binding anchor exists, a genuine failure on a DIFFERENT day no longer
+  // drives the exit code. It is still declared on its own anchor line — the
+  // per-anchor verdicts are rendered either way — and it must not be
+  // escalated, because an attacker can always append an element and can never
+  // be prevented from removing one (SPEC §8 rule 5 binds exporters only).
+  const bindsChainHead = anchorBindsChainHead(exp, chain, anchors);
+  const anchorFailed = !bindsChainHead && someAnchorFailed;
+  const time: TimeStatus = bindsChainHead
     ? "proven"
+    : anchorFailed
+    ? "failed"
     : "unproven";
   const properties: VerdictProperties = {
     integrity: integrityOk ? "ok" : "failed",
@@ -218,10 +312,30 @@ function propertyLines(properties: VerdictProperties): string[] {
  */
 const UNAVAILABLE_DISPLAY_CAP = 20;
 
+/**
+ * An `anchor_date` on its way to a terminal (BT-38, 2026-08-21).
+ *
+ * `unavailableEntryText` below already neutralized exactly this class of value,
+ * with exactly this reasoning — and the ten other places in this file that
+ * render an anchor date interpolated it raw. That is an inconsistency inside a
+ * single file, which is the kind that survives review: each raw site looks
+ * fine on its own, and only the sanitizing sibling shows the file disagreeing
+ * with itself.
+ *
+ * Unreachable from the CLI, where `shape.ts` has already required DATE_YMD of
+ * every anchor date and refused the document otherwise. It is reachable from a
+ * library caller, because `renderHuman` is a public function whose signature
+ * cannot express "these values came through the gate". Defence in depth costs
+ * one call; the audit cost of ten sites that MIGHT be fine is much higher.
+ */
+function anchorDay(value: unknown): string {
+  return terminalSafe(String(value ?? "?"), 32);
+}
+
 function unavailableEntryText(u: DeclaredUnavailableEntry): string {
   // Defence in depth: these values passed the shape gate through the CLI, but
   // renderHuman is a public function whose signature cannot express that.
-  const date = terminalSafe(String(u.anchor_date ?? "?"), 32);
+  const date = anchorDay(u.anchor_date);
   const seq = typeof u.sequence_number === "number" && Number.isFinite(u.sequence_number)
     ? String(u.sequence_number)
     : "?";
@@ -306,6 +420,17 @@ export function renderHuman(
   // null ⇒ no block at all — a document without the array renders
   // byte-identically to pre-1.6.
   unavailable: DeclaredUnavailableReport | null = null,
+  // BT-07 weak analogue (2026-08-21): whether a VALID qualified mark also
+  // binds this chain's head (qualifiedMarkBindsChainHead). The note below
+  // claims that events of THIS export inherit the eIDAS art. 42 presumption,
+  // which is only true when the marked aggregate contains this chain.
+  //
+  // It arrives as a parameter because the predicate needs the raw export and
+  // this function deliberately does not take one — the same reason the
+  // unavailable report is precomputed. The default is `false`, and it is the
+  // fail-safe direction: a caller that does not pass it loses a note, rather
+  // than making a legal claim nothing checked.
+  qualifiedBindsHead: boolean = false,
 ): string {
   const lines: string[] = [];
   const eventCount =
@@ -345,20 +470,20 @@ export function renderHuman(
   for (const a of anchors) {
     if (a.ots_status === "pending") {
       lines.push(
-        `[--] Anchor of ${a.anchor_date} — not yet stamped on Bitcoin (pending); aggregate hash ${
+        `[--] Anchor of ${anchorDay(a.anchor_date)} — not yet stamped on Bitcoin (pending); aggregate hash ${
           a.aggregate_recomputed ? "recomputed correctly" : "NOT RECOMPUTABLE"
         }.`,
       );
     } else if (a.time_consistent === false) {
       lines.push(
-        `[ERROR] Anchor of ${a.anchor_date} — the Bitcoin attestation is real but does not prove the declared day: ${
+        `[ERROR] Anchor of ${anchorDay(a.anchor_date)} — the Bitcoin attestation is real but does not prove the declared day: ${
           displaySafe(a.note)
         }.`,
       );
     } else if (a.bitcoin_verified === true) {
       const block = anchorBlockForDisplay(a);
       lines.push(
-        `[OK] Anchor of ${a.anchor_date} — recorded on Bitcoin${
+        `[OK] Anchor of ${anchorDay(a.anchor_date)} — recorded on Bitcoin${
           block !== null ? ` in block ${block}` : ""
         } (${displaySafe(a.note)}).`,
       );
@@ -367,12 +492,12 @@ export function renderHuman(
       a.ots_commits_to_aggregate === false
     ) {
       lines.push(
-        `[ERROR] Anchor of ${a.anchor_date} — verification failed (${
+        `[ERROR] Anchor of ${anchorDay(a.anchor_date)} — verification failed (${
           displaySafe(a.note || "invalid attestation")
         }).`,
       );
     } else {
-      lines.push(`[--] Anchor of ${a.anchor_date} — ${displaySafe(a.note)}.`);
+      lines.push(`[--] Anchor of ${anchorDay(a.anchor_date)} — ${displaySafe(a.note)}.`);
     }
 
     // Dual anchor (D98 (e)): one ADDITIVE line per anchor, always about the
@@ -383,7 +508,7 @@ export function renderHuman(
     if (qt) {
       switch (qt.status) {
         case "absent":
-          lines.push(`[--] Qualified timestamp of ${a.anchor_date} — absent.`);
+          lines.push(`[--] Qualified timestamp of ${anchorDay(a.anchor_date)} — absent.`);
           break;
         case "valid":
           // A late mark (re-timestamp, or a token that postdates the declared
@@ -392,15 +517,15 @@ export function renderHuman(
           lines.push(
             `[${
               qt.gen_time_consistent === false ? "WARN" : "OK"
-            }] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`,
+            }] Qualified timestamp of ${anchorDay(a.anchor_date)} — ${displaySafe(qt.note)}.`,
           );
           break;
         case "untrusted":
-          lines.push(`[WARN] Qualified timestamp of ${a.anchor_date} — ${displaySafe(qt.note)}.`);
+          lines.push(`[WARN] Qualified timestamp of ${anchorDay(a.anchor_date)} — ${displaySafe(qt.note)}.`);
           break;
         case "invalid":
           lines.push(
-            `[WARN] Qualified timestamp of ${a.anchor_date} — invalid (${displaySafe(qt.note)}).`,
+            `[WARN] Qualified timestamp of ${anchorDay(a.anchor_date)} — invalid (${displaySafe(qt.note)}).`,
           );
           break;
       }
@@ -472,23 +597,42 @@ export function renderHuman(
       lines.push("RESULT: INVALID INPUT. The file is not a readable humarch-export/v1 export.");
       break;
   }
+  // BT-07 (2026-08-21), the output half of BT-06's root. This note asserts
+  // COVERAGE — "the anchor covers events up to D" — and it used to be gated on
+  // `bitcoin_verified === true` alone, which is a statement about the
+  // attestation and not about this chain. On a fabricated chain carrying a
+  // genuine anchor lifted from a published export, the verdict printed
+  // "[--] Time — not proven" and this note TOGETHER: a reader who trusts the
+  // prose over the property table is told the export is anchored when the
+  // verifier just said it is not.
+  //
+  // Coverage is exactly the binding property, so the note is gated on it:
+  // `properties.time === "proven"` is true only when an anchor commits to this
+  // chain's recomputed head (SPEC §7). It is deliberately NOT gated on
+  // `result`, which can be `partial` for unrelated reasons — a range that does
+  // not reach genesis leaves the anchor's coverage claim perfectly true.
   const confirmed = anchors.filter((a) => a.bitcoin_verified === true);
-  if (confirmed.length > 0 && (result === "verified" || result === "partial")) {
+  if (
+    confirmed.length > 0 && properties.time === "proven" &&
+    (result === "verified" || result === "partial")
+  ) {
     const last = confirmed[confirmed.length - 1];
     lines.push(
-      `Note: the Bitcoin anchor covers events up to ${last.anchor_date}; later events are protected by the chain and the signatures.`,
+      `Note: the Bitcoin anchor covers events up to ${anchorDay(last.anchor_date)}; later events are protected by the chain and the signatures.`,
     );
   }
   // D98 (g), binding semantics: the presumption claim names the AGGREGATE —
   // "every event has its own timestamp" is a FORBIDDEN formulation. Gated on
   // the overall result like the Bitcoin note above (adversarial review F1):
   // a tampered or unverified export never earns the presumption sentence.
+  //
+  // BT-07 weak analogue (2026-08-21): "every event verifiably contained in it"
+  // is the load-bearing clause of the sentence, and until now nothing checked
+  // that any event of THIS export was contained in the marked aggregate. A
+  // genuine qualified mark lifted from a published export therefore bought a
+  // fabricated chain an eIDAS sentence. `qualifiedBindsHead` is that check.
   if (
-    (result === "verified" || result === "partial") &&
-    anchors.some((a) =>
-      a.qualified_timestamp?.status === "valid" &&
-      a.qualified_timestamp?.gen_time_consistent !== false
-    )
+    (result === "verified" || result === "partial") && qualifiedBindsHead
   ) {
     lines.push(
       "Note: the qualified timestamp attaches the eIDAS art. 42 presumption to the daily aggregate; every event verifiably contained in it inherits that anteriority through deterministic, reproducible recomputation.",
@@ -660,11 +804,23 @@ export function renderArtifactSearch(
       matches.length === 1 ? "" : "s"
     } declaring this hash (declared references only, SPEC 1.2.5 — nothing binds the artifact to the event).`,
   );
+  // BT-39 (2026-08-21). These four values went through terminalSafe, which
+  // passes every printable ASCII character — spaces, quotes and pipes
+  // included — so a 48-character `event_type` could compose a verdict
+  // look-alike fragment on this line. That is precisely the hole the F2 audit
+  // closed for --trace by introducing refSafe, and --find-artifact was left on
+  // the looser sink: one lane hardened, its sibling not (the "remedy the
+  // instance, never the class" pattern, N-004).
+  //
+  // A complete verdict is not forgeable here — refSafe escapes newlines, the
+  // line is prefixed with five spaces, and the counts above are computed — but
+  // these are machine identifiers, so the strict alphabet is what they
+  // actually need and there is nothing to trade away.
   for (const m of matches) {
     lines.push(
-      `     sequence ${Number(m.sequence_number)} · ${terminalSafe(m.event_type, 48)} · event ${
-        terminalSafe(m.event_id, 48)
-      } · occurred ${terminalSafe(m.occurred_at, 32)} — ${
+      `     sequence ${Number(m.sequence_number)} · ${refSafe(m.event_type, 48)} · event ${
+        refSafe(m.event_id, 48)
+      } · occurred ${refSafe(m.occurred_at, 32)} — ${
         m.within_verified_range
           ? `inside the verified range (${range})`
           : `OUTSIDE the verified range (${range}): integrity is not established for this event`

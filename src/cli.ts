@@ -18,6 +18,7 @@ import {
   jsonSafe,
   renderAncestry,
   renderArtifactSearch,
+  qualifiedMarkBindsChainHead,
   renderHuman,
   terminalSafe,
 } from "./render.ts";
@@ -33,6 +34,48 @@ import {
   trustedKeyBytes,
 } from "./issuer.ts";
 import { EMBEDDED_TSA, type TsaRegistry, tsaShapeProblems } from "./tst_lite.ts";
+
+/**
+ * Read cap for the issuer registry, on both legs (BT-35, 2026-08-21). A key
+ * registry is a handful of hex strings; a megabyte is already three orders of
+ * magnitude of headroom. Deliberately the same value as the explorer cap of
+ * `ots_lite.ts` — one number for "the most a remote party may hand this CLI".
+ */
+const MAX_ISSUER_RESPONSE = 1 << 20;
+
+/**
+ * Read a response body with a hard byte ceiling, cancelling the stream the
+ * moment it is crossed. `res.text()` cannot do this: it buffers to completion,
+ * so a slow, steady sender stays inside any timeout while handing over as much
+ * as it likes. A timeout bounds duration; only this bounds memory.
+ */
+async function readCapped(
+  res: Response,
+  cap: number,
+  what: string,
+): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > cap) {
+      await reader.cancel();
+      throw new Error(`${what} exceeds the ${cap}-byte read cap`);
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.length;
+  }
+  return new TextDecoder().decode(all);
+}
 
 function usage(): never {
   console.error(
@@ -168,8 +211,25 @@ async function main(): Promise<void> {
           );
           Deno.exit(4);
         }
-        text = await res.text();
+        // BT-35 (2026-08-21): `await res.text()` read the body whole, with no
+        // bound. The 30-second timeout bounds the DURATION of the fetch, not
+        // the BYTES it yields: a loopback server streaming steadily inside the
+        // window handed the CLI 150 MiB, all of it buffered, before JSON.parse
+        // failed on it. The explorer leg has had a read cap since D87
+        // (MAX_EXPLORER_RESPONSE); this is the same defence on the other
+        // network leg, which had simply been missed.
+        text = await readCapped(res, MAX_ISSUER_RESPONSE, "--issuer response");
       } else {
+        // The local leg is bounded too: a file is as capable of being large as
+        // a socket is, and a verifier that dies of an oversized key registry
+        // has still failed to verify (SPEC §8.1 class 6 — declared, never
+        // silent).
+        const info = Deno.statSync(issuerSource);
+        if (info.size > MAX_ISSUER_RESPONSE) {
+          throw new Error(
+            `issuer registry exceeds ${MAX_ISSUER_RESPONSE} bytes`,
+          );
+        }
         text = Deno.readTextFileSync(issuerSource);
       }
     } catch (err) {
@@ -253,9 +313,34 @@ async function main(): Promise<void> {
   // decoy), never a signing_key_id comparison (64-bit handle, D16).
   const attribution = attributeEvents(exp, trusted);
 
-  const chain = await verifyChain(exp);
-  const anchors = await verifyAnchors(exp, otsLevel, undefined, tsaRegistry);
-  const { result, exitCode, properties } = assess(exp, chain, anchors, attribution);
+  // BT-36 (2026-08-21), second half. The shape gate is defence in depth, not a
+  // proof: it can only report the shapes it knows to look for, and anything it
+  // misses reaches code that may throw — canonicalize() on a value RFC 8785
+  // cannot represent, a reader on bytes it cannot parse. Unguarded, such a
+  // throw left the CLI at exit 1 with a stack trace, which is neither of this
+  // tool's documented answers and is distinguishable, from the outside, from
+  // the exit 4 an automation maps to "reject".
+  //
+  // Everything from here to the verdict is therefore inside one boundary that
+  // maps an unexpected throw to the malformed-input outcome. It is the honest
+  // reading: if the verifier cannot process the document, it has not verified
+  // it, and it must say so in the vocabulary it promised (D65).
+  let chain, anchors, verdict;
+  try {
+    chain = await verifyChain(exp);
+    anchors = await verifyAnchors(exp, otsLevel, undefined, tsaRegistry);
+    verdict = assess(exp, chain, anchors, attribution);
+  } catch (err) {
+    // The message is derived from hostile bytes, so it goes through the same
+    // neutralizer as every other export-supplied string (SPEC §8 rule 9: a
+    // parser typically quotes the offending bytes verbatim, and echoing its
+    // message re-opens the hole this verifier just closed).
+    console.error(
+      `malformed input: ${terminalSafe(String((err as Error)?.message ?? err), 200)}`,
+    );
+    Deno.exit(4);
+  }
+  const { result, exitCode, properties } = verdict;
 
   // On-demand chain seals (D104, SPEC 1.5.0), AFTER assess and with no hand
   // on exitCode: the seal check is ADDITIVE — an export without the field
@@ -333,7 +418,16 @@ async function main(): Promise<void> {
     )));
   } else {
     console.log(
-      renderHuman(exp.tenant_id, chain, anchors, result, properties, chainSeals, unavailable),
+      renderHuman(
+        exp.tenant_id,
+        chain,
+        anchors,
+        result,
+        properties,
+        chainSeals,
+        unavailable,
+        qualifiedMarkBindsChainHead(exp, chain, anchors),
+      ),
     );
     if (artifactSearch !== null) {
       console.log(renderArtifactSearch(

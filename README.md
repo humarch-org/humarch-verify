@@ -235,6 +235,17 @@ is refused for being big. (Individual OpenTimestamps receipts are still bounded
 against malformed input — an attacker cannot make one small receipt cost
 unbounded work — see `THIRD_PARTY_NOTICES.md` and the reader's caps.)
 
+Until v1.7 that linearity claim was **false of receipt evaluation**: the
+operation walk copied its whole accumulated buffer on every concatenation, so
+cost grew with the SQUARE of the operation count. A receipt of 979 232 bytes —
+under the reader's 1 MiB cap, so nothing refused it — took 25 seconds, and
+halving it took 2.7, which is 9.2x for 2x input. The evaluation now holds the
+value as a list of segments and materializes it only when an operation needs
+the bytes; the ratio test in `tests/ots_lite.test.ts` fails the build if the
+quadratic copy ever returns. The caps had bounded the SIZE of an input and
+never the WORK it could demand, which is the general lesson: a byte ceiling is
+not a cost ceiling.
+
 ## Run from source / build binaries
 
 ```sh

@@ -141,3 +141,111 @@ Deno.test("pending anchors: the time fields stay null; the verdict declares time
   assertEquals(exitCode, 5);
   assertEquals(properties.time, "unproven");
 });
+
+// ---------------------------------------------------------------------------
+// BT-06 (2026-08-21) — `anchors` is an unsigned array the document's producer
+// chooses freely. Deciding the verdict with `some()` over it handed anyone a
+// denial of verification on anyone else's evidence: append one junk element
+// and a genuine export answers exit 3. The mirror image of BT-01(a), where
+// the same array was trusted in the other direction.
+//
+// The fix derives the time property from a BINDING anchor and keeps exit 3
+// only where it is still the honest answer: nothing binds AND something
+// failed. The test above ("time_consistent=false degrades a real attestation
+// to anchor_failed") is the guard on that second half and must stay green.
+// ---------------------------------------------------------------------------
+
+const SECOND_DAY = "2026-06-13";
+
+Deno.test("BT-06: a junk anchor appended to a genuine export cannot force exit 3", () => {
+  const genuine = assess(boundExp, okChain, [confirmedAnchor({})], "attributed");
+  assertEquals(genuine.result, "verified");
+  assertEquals(genuine.exitCode, 0);
+
+  // The cheapest possible edit: keep everything, append one element that
+  // fails. No keys, no hashes, no understanding of the format required.
+  const withDecoy = {
+    ...boundExp,
+    anchors: [
+      ...boundExp.anchors,
+      { anchor_date: SECOND_DAY, anchor_entries_for_aggregate: [] },
+    ],
+  };
+  const attacked = assess(withDecoy, okChain, [
+    confirmedAnchor({}),
+    confirmedAnchor({
+      anchor_date: SECOND_DAY,
+      aggregate_recomputed: false,
+      bitcoin_verified: false,
+      time_consistent: false,
+    }),
+  ], "attributed");
+  assertEquals(attacked.result, "verified", "the real anchor still binds this chain");
+  assertEquals(attacked.exitCode, 0);
+  assertEquals(attacked.properties.time, "proven");
+});
+
+Deno.test("BT-06: with nothing binding, a failing anchor still answers anchor_failed (exit 3)", () => {
+  // The half that must NOT regress. Here the export carries no binding anchor
+  // at all, and an element genuinely failed: exit 3 is the informative answer,
+  // and letting it slide to exit 5 would hide a real evidentiary degradation
+  // behind the milder "not yet proven".
+  const unboundExp = {
+    ...boundExp,
+    anchors: [{
+      anchor_date: DAY,
+      anchor_entries_for_aggregate: [{
+        tenant_id: TENANT,
+        last_event_hash: "cc".repeat(32),
+      }],
+    }],
+  };
+  const out = assess(unboundExp, okChain, [
+    confirmedAnchor({ bitcoin_verified: false, time_consistent: false }),
+  ], "attributed");
+  assertEquals(out.result, "anchor_failed");
+  assertEquals(out.exitCode, 3);
+  assertEquals(out.properties.time, "failed");
+});
+
+Deno.test("BT-06: an export with no anchors at all is still partial, never failed", () => {
+  const out = assess({ ...boundExp, anchors: [] }, okChain, [], "attributed");
+  assertEquals(out.result, "partial");
+  assertEquals(out.exitCode, 5);
+  assertEquals(out.properties.time, "unproven");
+});
+
+Deno.test("BT-07: a non-binding anchor prints no coverage note next to 'time not proven'", () => {
+  // The output half of the same root. The note asserts COVERAGE — "the anchor
+  // covers events up to D" — and used to be gated on bitcoin_verified alone,
+  // which is a fact about the attestation, not about this chain. On a
+  // fabricated chain carrying a genuine anchor the verdict printed
+  // "[--] Time — not proven" AND the coverage note together, and a reader who
+  // trusts prose over a property table is told the opposite of the finding.
+  const liftedExp = {
+    ...boundExp,
+    anchors: [{
+      anchor_date: DAY,
+      anchor_entries_for_aggregate: [{
+        tenant_id: TENANT,
+        last_event_hash: "cc".repeat(32), // some other chain's head
+      }],
+    }],
+  };
+  const anchors = [confirmedAnchor({})];
+  const out = assess(liftedExp, okChain, anchors, "attributed");
+  assertEquals(out.properties.time, "unproven");
+  assertEquals(out.result, "partial");
+
+  const human = renderHuman(TENANT, okChain, anchors, out.result, out.properties);
+  assertStringIncludes(human, "Time");
+  assert(
+    !human.includes("the Bitcoin anchor covers events up to"),
+    "no coverage claim for an anchor that covers nothing of this export",
+  );
+
+  // ...and the note is still printed when the anchor really does bind.
+  const bound = assess(boundExp, okChain, anchors, "attributed");
+  const humanOk = renderHuman(TENANT, okChain, anchors, bound.result, bound.properties);
+  assertStringIncludes(humanOk, "the Bitcoin anchor covers events up to");
+});

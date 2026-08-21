@@ -272,37 +272,79 @@ export async function evaluateOps(
   digest: Uint8Array,
   ops: readonly OtsOp[],
 ): Promise<Uint8Array> {
-  let cur = digest;
+  // BT-20 (2026-08-21). Each append/prepend used to allocate a fresh buffer
+  // and copy the whole accumulated value into it, so a run of n consecutive
+  // concatenations cost O(n²) BYTES copied. Measured on a 979 232-byte receipt
+  // — comfortably under MAX_RECEIPT_BYTES, so nothing refused it — 16 heights
+  // x 4096 appends took 25 011 ms; halving the input gave 2 715 ms, i.e. 9.2x
+  // for 2x, which is the quadratic signature. A hundred anchors of that shape
+  // is roughly forty minutes of CPU, and README's "Limits" section claimed
+  // linear cost. The byte caps bounded SIZE and never bounded WORK.
+  //
+  // The value is now held as a rope — a list of segments — and materialized
+  // only when an operation actually needs the bytes, which is exactly the
+  // hash ops. Concatenation becomes O(1) amortized, and since every hash op
+  // collapses the rope back to 20 or 32 bytes, the total copying is linear in
+  // the receipt. Byte-for-byte identical output: the segment order below
+  // reproduces the old `operand ‖ cur` and `cur ‖ operand` exactly.
+  let core = digest;
+  let prefix: Uint8Array[] = []; // prepends, in application order (last = outermost)
+  let suffix: Uint8Array[] = []; // appends, in application order
+  let total = digest.length;
+
+  const materialize = (): Uint8Array => {
+    if (prefix.length === 0 && suffix.length === 0) return core;
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (let i = prefix.length - 1; i >= 0; i--) {
+      out.set(prefix[i], at);
+      at += prefix[i].length;
+    }
+    out.set(core, at);
+    at += core.length;
+    for (const s of suffix) {
+      out.set(s, at);
+      at += s.length;
+    }
+    return out;
+  };
+  const collapse = (next: Uint8Array) => {
+    core = next;
+    prefix = [];
+    suffix = [];
+    total = next.length;
+  };
+
   for (const o of ops) {
     switch (o.op) {
       case "append":
       case "prepend": {
-        if (cur.length + o.operand.length > MAX_EVAL_BYTES) {
+        // The cap is still checked on every step, against the same running
+        // total the old code carried in `cur.length`: a rope that is never
+        // materialized must not be allowed to grow past the ceiling either.
+        if (total + o.operand.length > MAX_EVAL_BYTES) {
           throw new OtsParseError("evaluation buffer cap exceeded");
         }
-        const out = new Uint8Array(cur.length + o.operand.length);
-        if (o.op === "append") {
-          out.set(cur);
-          out.set(o.operand, cur.length);
-        } else {
-          out.set(o.operand);
-          out.set(cur, o.operand.length);
-        }
-        cur = out;
+        (o.op === "append" ? suffix : prefix).push(o.operand);
+        total += o.operand.length;
         break;
       }
       case "sha256":
-        cur = new Uint8Array(await crypto.subtle.digest("SHA-256", cur as BufferSource));
+        collapse(
+          new Uint8Array(await crypto.subtle.digest("SHA-256", materialize() as BufferSource)),
+        );
         break;
       case "sha1":
-        cur = new Uint8Array(await crypto.subtle.digest("SHA-1", cur as BufferSource));
+        collapse(
+          new Uint8Array(await crypto.subtle.digest("SHA-1", materialize() as BufferSource)),
+        );
         break;
       case "ripemd160":
-        cur = ripemd160(cur);
+        collapse(ripemd160(materialize()));
         break;
     }
   }
-  return cur;
+  return materialize();
 }
 
 // --- explorer leg (D64 level "explorer") -----------------------------------

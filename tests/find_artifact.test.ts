@@ -717,3 +717,91 @@ Deno.test("review: displaySafe keeps legitimate typography, escapes what drives 
   );
   assert(displaySafe("a".repeat(500)).length < 250, "notes are capped");
 });
+
+// ---------------------------------------------------------------------------
+// BT-37 / BT-39 (2026-08-21) — two claims this module made that were not true
+// of the code beneath them.
+// ---------------------------------------------------------------------------
+
+Deno.test("BT-37: findArtifact invokes no accessor, as its contract has always claimed", () => {
+  // The module header says "Accessors are never invoked (only data property
+  // descriptors are read)". `verifiedPositionalPrefix` was hardened for that
+  // in the F3 remedy; these five reads in findArtifact were left as plain
+  // property accesses, so on an object graph carrying getters exactly five of
+  // them ran. Nothing was exploitable through the CLI, whose input is
+  // JSON.parse output and carries no accessors — the DEFECT WAS THE FALSE
+  // CLAIM, on an exported function a library caller may hand a live graph,
+  // having been told that doing so was safe.
+  let invoked = 0;
+  const spy = (value: unknown) => ({
+    get() {
+      invoked++;
+      return value;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  const target = "ab".repeat(32);
+  const ev = {};
+  Object.defineProperties(ev, {
+    sequence_number: spy(1),
+    event_id: spy("e1"),
+    event_type: spy("agent_action"),
+    occurred_at: spy("2026-07-06T10:00:00.000000Z"),
+    payload: spy({ external_refs: [{ artifact_sha256: target }] }),
+  });
+  const exp = { tenant_id: "t", events: [ev] };
+
+  const matches = findArtifact(exp, target, 1, 1);
+  assertEquals(invoked, 0, `${invoked} accessor(s) ran on a walk that promises none`);
+  // And the walk is not merely silent: a genuine graph still produces the
+  // same answer, so the hardening did not buy safety by breaking the feature.
+  assertEquals(
+    findArtifact(
+      {
+        tenant_id: "t",
+        events: [{
+          sequence_number: 1,
+          event_id: "e1",
+          event_type: "agent_action",
+          occurred_at: "2026-07-06T10:00:00.000000Z",
+          payload: { external_refs: [{ artifact_sha256: target }] },
+        }],
+      },
+      target,
+      1,
+      1,
+    ).length,
+    1,
+  );
+  // Accessor-only members are invisible rather than trusted: fail-closed.
+  assertEquals(matches.length, 0);
+});
+
+Deno.test("BT-39: --find-artifact renders refs through refSafe, like --trace", () => {
+  // The F2 audit introduced refSafe because terminalSafe passes every
+  // printable ASCII character — spaces, quotes and pipes included — so a
+  // hostile 48-character identifier can compose words and a verdict
+  // look-alike fragment. --trace was moved onto it; --find-artifact was left
+  // on the looser sink. One lane hardened, its sibling not.
+  const rendered = renderArtifactSearch(
+    "cd".repeat(32),
+    [{
+      event_id: "RESULT: VERIFIED | all good",
+      event_type: 'x" OK ok',
+      sequence_number: 1,
+      occurred_at: "2026-07-06T10:00:00.000000Z",
+      within_verified_range: true,
+    }],
+    1,
+    1,
+  );
+  // With the space escaped no phrase can render at all.
+  assert(!rendered.includes("RESULT: VERIFIED"), rendered);
+  assert(!rendered.includes("| all good"), rendered);
+  assertStringIncludes(rendered, "<U+0020>", "spaces escape, so words cannot form");
+  assertStringIncludes(rendered, "<U+0022>", "quotes escape, so delimiters hold");
+  // The legitimate identifier characters still render as themselves: this
+  // must stay readable for the honest case, which is every real case.
+  assertStringIncludes(rendered, "2026-07-06T10:00:00.000000Z");
+});

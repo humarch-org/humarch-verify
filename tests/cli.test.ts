@@ -334,3 +334,77 @@ Deno.test("cli (M3 case 5): the padding bypass — genuine key as decoy, events 
     assert(!viaPubkey.stdout.includes("RESULT: VERIFIED"), viaPubkey.stdout);
   });
 });
+
+// ---------------------------------------------------------------------------
+// BT-35 / BT-36 (2026-08-21) — the two ways this CLI could be made to answer
+// something other than one of its documented exit codes.
+// ---------------------------------------------------------------------------
+
+Deno.test("BT-35: --issuer over the network is bounded in BYTES, not just in time", async () => {
+  // The 30-second timeout bounds how LONG the fetch may take. It never
+  // bounded how MUCH it may yield, and `await res.text()` buffers to
+  // completion: a loopback server streaming steadily inside the window handed
+  // the CLI 150 MiB, all of it resident, before JSON.parse failed on it. The
+  // explorer leg has had a read cap since D87; this leg had simply been
+  // missed.
+  let served = 0;
+  const chunk = new Uint8Array(64 * 1024).fill(0x20); // spaces: valid UTF-8
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            served += chunk.length;
+            // Well past the 1 MiB cap, and far short of what an unbounded
+            // reader would have accepted.
+            if (served > 8 * 1024 * 1024) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+  );
+  try {
+    const url = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}/keys.json`;
+    const r = await runCli(fromFileUrl(goldenPath), "--issuer", url);
+    assertEquals(r.code, 4, "an oversized registry is malformed input, not a crash");
+    assertStringIncludes(r.stderr, "read cap");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("BT-36: a non-finite past the walk budget is exit 4, never a stack trace", async () => {
+  // The finite-number walk stopped silently when its 2 000 000-node budget ran
+  // out, reporting no problem at all — so a `1e999` planted past the budget
+  // reached verifyChain, canonicalize() threw, and the CLI surfaced exit 1
+  // with a stack trace. An automation that maps exit 4 to "reject" was
+  // therefore steerable by document SIZE: make the document big enough and the
+  // rejection stops looking like a rejection.
+  const exp = golden();
+  const filler: Record<string, unknown> = {};
+  // Comfortably past the budget, built as breadth rather than depth so the
+  // walk cannot bail on a nesting limit first.
+  for (let i = 0; i < 2_100_000; i++) filler["k" + i] = 1;
+  exp.events[0].payload.bulk = filler;
+  const tmp = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    // 1e999 is not expressible through JSON.stringify (it becomes null), so
+    // the literal is spliced into the serialized text, exactly as a
+    // hand-crafted hostile document would carry it.
+    const text = JSON.stringify(exp).replace('"bulk":{"k0":1', '"bulk":{"k0":1e999');
+    await Deno.writeTextFile(tmp, text);
+    const r = await runCli(tmp);
+    assertEquals(r.code, 4, `expected malformed input, got ${r.code}: ${r.stderr.slice(0, 400)}`);
+    assert(
+      !r.stderr.includes("at file:///"),
+      `a stack trace leaked instead of the contractual outcome: ${r.stderr.slice(0, 400)}`,
+    );
+  } finally {
+    await Deno.remove(tmp);
+  }
+});
